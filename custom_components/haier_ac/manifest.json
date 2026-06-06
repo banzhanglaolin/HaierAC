@@ -1,0 +1,15 @@
+{
+  "domain": "haier_ac",
+  "name": "Haier AC",
+  "version": "0.1.0",
+  "codeowners": [
+    "@banzhanglaolin"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/banzhanglaolin/HaierAC",
+  "issue_tracker": "https://github.com/banzhanglaolin/HaierAC/issues",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "requirements": []
+}

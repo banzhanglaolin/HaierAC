@@ -1,0 +1,37 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This air conditioner is already configured.",
+      "reconfigure_successful": "The air conditioner configuration was updated."
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the air conditioner. Check the IP address, port, MAC address, and network access.",
+      "invalid_ip": "IP address is not valid.",
+      "invalid_mac": "MAC address must contain 12 hexadecimal characters."
+    },
+    "step": {
+      "reconfigure": {
+        "data": {
+          "host": "IP address",
+          "mac": "MAC address",
+          "name": "Name",
+          "port": "Port",
+          "timeout": "Timeout"
+        },
+        "description": "Update the local network details for the Haier AC module.",
+        "title": "Reconfigure Haier AC Local"
+      },
+      "user": {
+        "data": {
+          "host": "IP address",
+          "mac": "MAC address",
+          "name": "Name",
+          "port": "Port",
+          "timeout": "Timeout"
+        },
+        "description": "Enter the local network details for the Haier AC module.",
+        "title": "Haier AC Local"
+      }
+    }
+  }
+}
