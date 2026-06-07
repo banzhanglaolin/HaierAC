@@ -70,6 +70,13 @@ class ProtocolBuildParseTest(unittest.TestCase):
         with self.assertRaises(InvalidPacketError):
             parse_heartbeat_response(response, 8, MAC)
 
+    def test_parse_short_outer_heartbeat_response(self) -> None:
+        response = _outer_heartbeat_response(7)
+        parse_heartbeat_response(response, 7, MAC)
+
+        with self.assertRaises(InvalidPacketError):
+            parse_heartbeat_response(response, 8, MAC)
+
     def test_build_short_uart_command(self) -> None:
         frame = build_uart_short_command(Subcommand.QUERY_STATUS)
         self.assertEqual(frame[:2], b"\xFF\xFF")
@@ -170,6 +177,18 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
             b"\x00" * 8,
+        )
+    )
+
+
+def _outer_heartbeat_response(message_id: int) -> bytes:
+    return b"".join(
+        (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
+            b"\x00" * 4,
+            struct.pack(">I", message_id),
+            b"\x00" * 4,
         )
     )
 

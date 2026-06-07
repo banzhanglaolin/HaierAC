@@ -9,6 +9,7 @@ import logging
 
 from .protocol import (
     ACStatus,
+    DataClass,
     FanDirection,
     FanSpeed,
     HaierProtocolError,
@@ -170,9 +171,24 @@ class HaierACClient:
         await self._drain(writer)
 
         header = await self._read_exactly(reader, 12)
-        payload_len = int.from_bytes(header[8:12], "big")
-        payload = await self._read_exactly(reader, payload_len)
-        parse_heartbeat_response(header + payload, message_id, self.mac)
+        if int.from_bytes(header[2:4], "big") == DataClass.HEARTBEAT_RESPONSE:
+            response = header + await self._read_exactly(reader, 4)
+        else:
+            payload_len = int.from_bytes(header[8:12], "big")
+            response = header + await self._read_exactly(reader, payload_len)
+
+        try:
+            parse_heartbeat_response(response, message_id, self.mac)
+        except InvalidPacketError as err:
+            _LOGGER.warning(
+                "Invalid heartbeat response from %s:%s: %s; hex=%s ascii=%r",
+                self.host,
+                self.port,
+                err,
+                response.hex(" "),
+                _format_ascii(response),
+            )
+            raise
 
     async def _exchange_disconnect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -203,3 +219,7 @@ class HaierACClient:
         message_id = self._message_id
         self._message_id = (self._message_id + 1) & 0xFFFFFFFF
         return message_id
+
+
+def _format_ascii(data: bytes) -> str:
+    return "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)

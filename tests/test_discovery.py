@@ -16,6 +16,25 @@ from custom_components.haier_ac.discovery import (
     parse_discovery_response,
 )
 
+REAL_DISCOVERY_RESPONSE = (
+    b"Haier\x00\x00hM"
+    + b"\x00" * 10
+    + b"\x01 0007A8B26279"
+    + b"\x00" * 4
+    + b"00000000000000008080000000041410"
+    + b"\x00" * 120
+    + b"Xing_Qi_Wu"
+    + b"\x00" * 22
+    + b"10.16.45.36"
+    + b"\x00" * 5
+    + b"0.0.0"
+    + b"\x00" * 3
+    + b"1.12"
+    + b"\x00" * 4
+    + b"e_1.3.03G_1.0.00eSDK_WIFI_AC"
+    + b"\x00" * 20
+)
+
 
 class DiscoveryProtocolTest(unittest.TestCase):
     """Exercise UDP discovery payload and response parsing."""
@@ -130,6 +149,24 @@ class DiscoveryProtocolTest(unittest.TestCase):
             HaierACDiscoveredDevice(host="10.16.45.36", mac="0007A8B26279"),
         )
 
+    def test_parse_discovery_response_extracts_returned_device_fields(self) -> None:
+        device = parse_discovery_response(
+            REAL_DISCOVERY_RESPONSE,
+            ("192.168.1.200", 7083),
+        )
+
+        self.assertEqual(
+            device,
+            HaierACDiscoveredDevice(
+                host="10.16.45.36",
+                mac="0007A8B26279",
+                name="Xing_Qi_Wu",
+                advertised_host="10.16.45.36",
+                module_type="eSDK_WIFI_AC",
+                firmware_version="e_1.3.03G_1.0.00",
+            ),
+        )
+
     def test_parse_discovery_response_ignores_payload_without_mac(self) -> None:
         self.assertIsNone(
             parse_discovery_response(b"Haier\x00UDISCOVERY_SDK", ("10.16.45.36", 7083))
@@ -137,7 +174,7 @@ class DiscoveryProtocolTest(unittest.TestCase):
 
     def test_discovery_protocol_deduplicates_by_mac(self) -> None:
         protocol = _DiscoveryProtocol()
-        with self.assertLogs("custom_components.haier_ac.discovery", level="WARNING"):
+        with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG"):
             protocol.datagram_received(b"mac=00:07:a8:b2:62:79", ("10.16.45.36", 7083))
             protocol.datagram_received(b"mac=00:07:a8:b2:62:79", ("10.16.45.37", 7083))
 
@@ -149,7 +186,7 @@ class DiscoveryProtocolTest(unittest.TestCase):
     def test_datagram_received_logs_raw_response(self) -> None:
         protocol = _DiscoveryProtocol()
 
-        with self.assertLogs("custom_components.haier_ac.discovery", level="WARNING") as logs:
+        with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG") as logs:
             protocol.datagram_received(
                 b"Haier\x000007A8B26279\x00UDISCOVERY_SDK",
                 ("10.16.45.36", 7083),
@@ -161,10 +198,23 @@ class DiscoveryProtocolTest(unittest.TestCase):
         self.assertIn("Haier.0007A8B26279.UDISCOVERY_SDK", output)
         self.assertIn("host=10.16.45.36 mac=0007A8B26279", output)
 
+    def test_datagram_received_logs_returned_device_fields(self) -> None:
+        protocol = _DiscoveryProtocol()
+
+        with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG") as logs:
+            protocol.datagram_received(REAL_DISCOVERY_RESPONSE, ("10.16.45.36", 7083))
+
+        output = "\n".join(logs.output)
+        self.assertIn("host=10.16.45.36 mac=0007A8B26279", output)
+        self.assertIn("name=Xing_Qi_Wu", output)
+        self.assertIn("module=eSDK_WIFI_AC", output)
+        self.assertIn("firmware=e_1.3.03G_1.0.00", output)
+
+
     def test_datagram_received_logs_unparseable_response(self) -> None:
         protocol = _DiscoveryProtocol()
 
-        with self.assertLogs("custom_components.haier_ac.discovery", level="WARNING") as logs:
+        with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG") as logs:
             protocol.datagram_received(b"Haier\x00UDISCOVERY_SDK", ("10.16.45.36", 7083))
 
         output = "\n".join(logs.output)
@@ -191,7 +241,7 @@ class DiscoveryBroadcastTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(
                 loop, "create_datagram_endpoint", create_datagram_endpoint
             ):
-                with self.assertLogs("custom_components.haier_ac.discovery", level="WARNING"):
+                with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG"):
                     devices = await async_discover_devices(timeout=0)
 
         self.assertEqual(
@@ -221,13 +271,16 @@ class DiscoveryBroadcastTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(
                 loop, "create_datagram_endpoint", create_datagram_endpoint
             ):
-                with self.assertLogs("custom_components.haier_ac.discovery", level="WARNING") as logs:
+                with self.assertLogs("custom_components.haier_ac.discovery", level="DEBUG") as logs:
                     await async_discover_devices(timeout=0)
 
         output = "\n".join(logs.output)
         self.assertIn("broadcast to 255.255.255.255:7083", output)
         self.assertIn("48 61 69 65 72", output)
-        self.assertIn("found 1 device(s): 10.16.45.36/0007A8B26279", output)
+        self.assertIn(
+            "found 1 device(s): host=10.16.45.36 mac=0007A8B26279",
+            output,
+        )
 
 
 class _Socket:

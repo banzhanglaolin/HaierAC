@@ -7,7 +7,12 @@ import unittest
 from unittest.mock import AsyncMock
 
 from custom_components.haier_ac.client import HaierACClient, HaierACCommunicationError
-from custom_components.haier_ac.protocol import InvalidPacketError, build_heartbeat, normalize_mac
+from custom_components.haier_ac.protocol import (
+    DataClass,
+    InvalidPacketError,
+    build_heartbeat,
+    normalize_mac,
+)
 
 
 class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
@@ -49,6 +54,22 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
+    async def test_exchange_heartbeat_accepts_short_outer_response(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        response = _outer_heartbeat_response(0)
+        reader = _Reader(response[:12], response[12:])
+        writer = _Writer()
+
+        await client._exchange_heartbeat(reader, writer)
+
+        self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
 
 class _Reader:
     def __init__(self, *chunks: bytes) -> None:
@@ -83,6 +104,19 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             b"\x00" * 8,
         )
     )
+
+
+def _outer_heartbeat_response(message_id: int) -> bytes:
+    return b"".join(
+        (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
+            b"\x00" * 4,
+            struct.pack(">I", message_id),
+            b"\x00" * 4,
+        )
+    )
+
 
 if __name__ == "__main__":
     unittest.main()

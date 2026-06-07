@@ -96,11 +96,24 @@ async def _discover_defaults() -> dict[str, Any]:
         return {}
 
     device = devices[0]
-    _LOGGER.info("Discovered Haier AC at %s with MAC %s", device.host, device.mac)
-    return {
+    name = getattr(device, "name", None)
+    module_type = getattr(device, "module_type", None)
+    firmware_version = getattr(device, "firmware_version", None)
+    _LOGGER.info(
+        "Discovered Haier AC at %s with MAC %s name=%s module=%s firmware=%s",
+        device.host,
+        device.mac,
+        name,
+        module_type,
+        firmware_version,
+    )
+    defaults = {
         CONF_HOST: device.host,
         CONF_MAC: device.mac,
     }
+    if name:
+        defaults[CONF_NAME] = name
+    return defaults
 
 
 async def _test_connection(data: dict[str, Any]) -> dict[str, str]:

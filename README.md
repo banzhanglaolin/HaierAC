@@ -35,7 +35,7 @@ This integration talks directly to the air conditioner's LAN module by IP addres
 
 ## Configuration
 
-When the config flow opens, it first sends a UDP broadcast discovery request to `255.255.255.255:7083`. If a device responds, the IP address and MAC address fields are prefilled. You can still enter the values manually.
+When the config flow opens, it first sends a UDP broadcast discovery request to `255.255.255.255:7083`. If a device responds, the integration parses the returned device name, IP address, MAC address, module type, and firmware string. The name, IP address, and MAC address fields are prefilled from the response. You can still enter the values manually.
 
 The config flow asks for:
 
