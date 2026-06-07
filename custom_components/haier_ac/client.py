@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 import logging
@@ -31,6 +32,7 @@ _STARTUP_REPORT_FIRST_TIMEOUT = 2.0
 _STARTUP_REPORT_IDLE_TIMEOUT = 0.25
 _STARTUP_REPORT_LIMIT = 5
 _MAX_MISSED_HEARTBEATS = 3
+StatusListener = Callable[[ACStatus], None]
 
 
 class HaierACCommunicationError(Exception):
@@ -64,6 +66,18 @@ class HaierACClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._missed_heartbeats = 0
+        self._status_listeners: set[StatusListener] = set()
+
+    def async_add_status_listener(
+        self, listener: StatusListener
+    ) -> Callable[[], None]:
+        """Register a callback for status reports received from the device."""
+        self._status_listeners.add(listener)
+
+        def remove_listener() -> None:
+            self._status_listeners.discard(listener)
+
+        return remove_listener
 
     async def async_test_connection(self) -> None:
         """Open a socket and perform the heartbeat handshake."""
@@ -89,7 +103,7 @@ class HaierACClient:
             use_startup_status=True,
         )
         if status is not None:
-            self.status = status
+            self._set_status(status)
         return self.status
 
     async def async_close(self) -> None:
@@ -97,16 +111,41 @@ class HaierACClient:
         async with self._lock:
             await self._close_connection()
 
+    async def async_heartbeat(self) -> ACStatus:
+        """Keep the TCP connection alive and consume queued status reports."""
+        async with self._lock:
+            try:
+                reader, writer, startup_status = await self._ensure_connection()
+                if startup_status is not None:
+                    self._set_status(startup_status)
+                try:
+                    heartbeat_status = await self._exchange_heartbeat_with_retry(
+                        reader, writer
+                    )
+                except _HeartbeatMissed:
+                    return self.status
+                if heartbeat_status is not None:
+                    self._set_status(heartbeat_status)
+                return self.status
+            except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
+                await self._close_connection()
+                raise HaierACCommunicationError(
+                    f"Failed to communicate with {self.host}:{self.port}"
+                ) from err
+            except HaierProtocolError as err:
+                await self._close_connection()
+                raise HaierACCommunicationError(str(err)) from err
+
     async def async_turn_on(self) -> ACStatus:
         """Turn the AC on."""
         status = await self._send_uart(build_uart_short_command(Subcommand.TURN_ON))
-        self.status = status or replace(self.status, power_on=True)
+        self._set_status(status or replace(self.status, power_on=True))
         return self.status
 
     async def async_turn_off(self) -> ACStatus:
         """Turn the AC off."""
         status = await self._send_uart(build_uart_short_command(Subcommand.TURN_OFF))
-        self.status = status or replace(self.status, power_on=False)
+        self._set_status(status or replace(self.status, power_on=False))
         return self.status
 
     async def async_apply(
@@ -151,7 +190,7 @@ class HaierACClient:
             health_on=desired.health_on,
         )
         status = await self._send_uart(frame)
-        self.status = status or desired
+        self._set_status(status or desired)
         return self.status
 
     async def _send_uart(
@@ -168,7 +207,7 @@ class HaierACClient:
                     return self.status
                 pre_command_status = heartbeat_status or startup_status
                 if pre_command_status is not None:
-                    self.status = pre_command_status
+                    self._set_status(pre_command_status)
 
                 message_id = self._next_message_id()
                 request = build_command(message_id, self.mac, uart_frame)
@@ -192,31 +231,7 @@ class HaierACClient:
                 writer.write(request)
                 await self._drain(writer)
 
-                prefix = await self._read_exactly(reader, 80)
-                uart_len = int.from_bytes(prefix[76:80], "big")
-                uart_payload = await self._read_exactly(reader, uart_len)
-                response = prefix + uart_payload
-                _log_tcp_packet(
-                    self.host,
-                    self.port,
-                    "command response",
-                    "from",
-                    response,
-                    message_id=message_id,
-                    uart_length=uart_len,
-                )
-                if uart_payload:
-                    _log_tcp_packet(
-                        self.host,
-                        self.port,
-                        "command UART response",
-                        "from",
-                        uart_payload,
-                        message_id=message_id,
-                    )
-                command_status = parse_command_response(
-                    response, message_id, self.mac
-                )
+                command_status = await self._read_command_response(reader, message_id)
 
                 try:
                     post_heartbeat_status = await self._exchange_heartbeat_with_retry(
@@ -378,6 +393,63 @@ class HaierACClient:
                 latest_status = status
         return latest_status
 
+    async def _read_command_response(
+        self, reader: asyncio.StreamReader, message_id: int
+    ) -> ACStatus | None:
+        deadline = asyncio.get_running_loop().time() + self.timeout
+        latest_status: ACStatus | None = None
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            response = await self._read_tcp_packet(
+                reader, first_byte_timeout=remaining
+            )
+            if _data_class(response) != DataClass.DATA_RESPONSE:
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "packet before command response",
+                    "from",
+                    response,
+                    message_id=message_id,
+                )
+                raise InvalidPacketError("unexpected command packet type")
+
+            response_message_id = int.from_bytes(response[72:76], "big")
+            uart_len = int.from_bytes(response[76:80], "big")
+            if response_message_id != message_id:
+                status = self._handle_status_report(
+                    response, "status report before command response"
+                )
+                if status is not None:
+                    latest_status = status
+                continue
+
+            _log_tcp_packet(
+                self.host,
+                self.port,
+                "command response",
+                "from",
+                response,
+                message_id=message_id,
+                uart_length=uart_len,
+            )
+            uart_payload = response[80:]
+            if uart_payload:
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "command UART response",
+                    "from",
+                    uart_payload,
+                    message_id=message_id,
+                )
+            return (
+                parse_command_response(response, message_id, self.mac)
+                or latest_status
+            )
+
     def _handle_status_report(self, response: bytes, label: str) -> ACStatus | None:
         report_message_id = int.from_bytes(response[72:76], "big")
         uart_len = int.from_bytes(response[76:80], "big")
@@ -415,8 +487,16 @@ class HaierACClient:
             )
             return None
         if status is not None:
-            self.status = status
+            self._set_status(status)
         return status
+
+    def _set_status(self, status: ACStatus) -> None:
+        self.status = status
+        for listener in tuple(self._status_listeners):
+            try:
+                listener(status)
+            except Exception:
+                _LOGGER.exception("Haier AC status listener failed")
 
     async def _read_tcp_packet(
         self,

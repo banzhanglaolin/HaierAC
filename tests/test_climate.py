@@ -27,8 +27,14 @@ def _install_homeassistant_stubs() -> None:
     )
 
     class ClimateEntity:
+        def async_on_remove(self, callback: object) -> None:
+            callbacks = getattr(self, "remove_callbacks", [])
+            callbacks.append(callback)
+            self.remove_callbacks = callbacks
+
         def async_write_ha_state(self) -> None:
             self.wrote_state = True
+            self.write_count = getattr(self, "write_count", 0) + 1
 
     class ClimateEntityFeature(enum.IntFlag):
         TARGET_TEMPERATURE = 1
@@ -90,6 +96,7 @@ def _install_homeassistant_stubs() -> None:
         "homeassistant.core", types.ModuleType("homeassistant.core")
     )
     core.HomeAssistant = object
+    core.callback = lambda func: func
 
     helpers = sys.modules.setdefault(
         "homeassistant.helpers", types.ModuleType("homeassistant.helpers")
@@ -116,6 +123,8 @@ class ClimateFanModeTest(unittest.IsolatedAsyncioTestCase):
             mac="AABBCCDDEEFF",
             status=status,
             async_apply=AsyncMock(return_value=status),
+            async_add_status_listener=lambda listener: lambda: None,
+            async_heartbeat=AsyncMock(return_value=status),
             async_query_status=AsyncMock(return_value=status),
         )
         return climate.HaierACClimate(client, "entry-id")
@@ -167,6 +176,17 @@ class ClimateFanModeTest(unittest.IsolatedAsyncioTestCase):
         await entity.async_update()
 
         self.assertFalse(entity._attr_available)
+
+    def test_status_listener_marks_entity_available_and_writes_state(self) -> None:
+        entity = self._entity(
+            ACStatus(power_on=True, mode=Mode.COOL, fan_speed=FanSpeed.AUTO)
+        )
+        entity._attr_available = False
+
+        entity._handle_client_status_update(entity._client.status)
+
+        self.assertTrue(entity._attr_available)
+        self.assertTrue(entity.wrote_state)
 
 
 if __name__ == "__main__":

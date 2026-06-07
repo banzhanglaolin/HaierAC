@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
@@ -19,7 +21,7 @@ from homeassistant.components.climate.const import (
     SWING_VERTICAL,
 )
 from homeassistant.const import ATTR_TEMPERATURE, PRECISION_WHOLE, UnitOfTemperature
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HaierACConfigEntry
@@ -52,6 +54,7 @@ HVAC_MODE_TO_HAIER = {
     HVACMode.DRY: Mode.DRY,
 }
 HAIER_TO_HVAC_MODE = {value: key for key, value in HVAC_MODE_TO_HAIER.items()}
+_STATUS_REPORT_INTERVAL = 5
 
 
 async def async_setup_entry(
@@ -160,6 +163,16 @@ class HaierACClimate(ClimateEntity):
     def _status(self) -> ACStatus:
         return self._client.status
 
+    async def async_added_to_hass(self) -> None:
+        """Start consuming unsolicited status reports from the TCP connection."""
+        self.async_on_remove(
+            self._client.async_add_status_listener(
+                self._handle_client_status_update
+            )
+        )
+        keepalive_task = self.hass.async_create_task(self._async_status_report_loop())
+        self.async_on_remove(keepalive_task.cancel)
+
     async def async_update(self) -> None:
         """Fetch latest state from the air conditioner."""
         try:
@@ -168,6 +181,27 @@ class HaierACClimate(ClimateEntity):
             self._attr_available = False
         else:
             self._attr_available = True
+
+    @callback
+    def _handle_client_status_update(self, status: ACStatus) -> None:
+        """Write state immediately when the client receives a status report."""
+        self._attr_available = True
+        self.async_write_ha_state()
+
+    async def _async_status_report_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_STATUS_REPORT_INTERVAL)
+            try:
+                await self._client.async_heartbeat()
+            except asyncio.CancelledError:
+                raise
+            except HaierACCommunicationError:
+                self._attr_available = False
+                self.async_write_ha_state()
+            else:
+                if not self._attr_available:
+                    self._attr_available = True
+                    self.async_write_ha_state()
 
     async def async_turn_on(self) -> None:
         """Turn the air conditioner on."""

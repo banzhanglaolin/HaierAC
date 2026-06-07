@@ -139,7 +139,14 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         uart_frame = build_uart_short_command(Subcommand.QUERY_STATUS)
         command_response = _command_response(0, client.mac, uart_frame)
         client._open = AsyncMock(
-            return_value=(_Reader(command_response[:80], command_response[80:]), writer)
+            return_value=(
+                _Reader(
+                    command_response[:4],
+                    command_response[4:80],
+                    command_response[80:],
+                ),
+                writer,
+            )
         )
         client._consume_startup_status_reports = AsyncMock(return_value=startup_status)
         client._exchange_heartbeat = AsyncMock(return_value=None)
@@ -178,11 +185,46 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
-            await client._exchange_heartbeat(reader, writer)
+            status = await client._exchange_heartbeat(reader, writer)
 
         output = "\n".join(logs.output)
         self.assertIn("status report before heartbeat response", output)
         self.assertIn("heartbeat response from 192.0.2.10:56800", output)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.target_temperature, 26.0)
+        self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
+    async def test_async_heartbeat_consumes_report_and_notifies_listener(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        report = _command_response(0, client.mac, _startup_status_uart())
+        heartbeat = _heartbeat_response(0, client.mac)
+        reader = _Reader(
+            report[:4],
+            report[4:80],
+            report[80:],
+            heartbeat[:4],
+            heartbeat[4:16],
+            heartbeat[16:],
+        )
+        writer = _Writer()
+        updates: list[ACStatus] = []
+        client.async_add_status_listener(updates.append)
+        client._open = AsyncMock(return_value=(reader, writer))
+        client._consume_startup_status_reports = AsyncMock(return_value=None)
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            status = await client.async_heartbeat()
+
+        self.assertEqual(status.target_temperature, 26.0)
+        self.assertEqual(client.status.target_temperature, 26.0)
+        self.assertEqual(updates[-1].target_temperature, 26.0)
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
     async def test_exchange_heartbeat_logs_request_and_response(self) -> None:
@@ -216,8 +258,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             timeout=1,
             name="Haier AC",
         )
-        response = _command_response(1, client.mac, b"\xFF\xFF\x00")
-        reader = _Reader(response[:80], response[80:])
+        response = _command_response(0, client.mac, b"\xFF\xFF\x00")
+        reader = _Reader(response[:4], response[4:80], response[80:])
         writer = _Writer()
         client._open = AsyncMock(return_value=(reader, writer))
         client._consume_startup_status_reports = AsyncMock()
@@ -245,6 +287,45 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client._exchange_heartbeat.await_count, 2)
         self.assertEqual(client._missed_heartbeats, 0)
         client._close.assert_not_awaited()
+
+    async def test_send_uart_consumes_status_report_before_command_response(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        uart_frame = build_uart_short_command(Subcommand.QUERY_STATUS)
+        first_heartbeat = _heartbeat_response(0, client.mac)
+        report = _command_response(0, client.mac, _startup_status_uart())
+        command_response = _command_response(1, client.mac, uart_frame)
+        second_heartbeat = _heartbeat_response(2, client.mac)
+        reader = _Reader(
+            first_heartbeat[:4],
+            first_heartbeat[4:16],
+            first_heartbeat[16:],
+            report[:4],
+            report[4:80],
+            report[80:],
+            command_response[:4],
+            command_response[4:80],
+            command_response[80:],
+            second_heartbeat[:4],
+            second_heartbeat[4:16],
+            second_heartbeat[16:],
+        )
+        writer = _Writer()
+        client._open = AsyncMock(return_value=(reader, writer))
+        client._consume_startup_status_reports = AsyncMock(return_value=None)
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+            status = await client._send_uart(uart_frame)
+
+        output = "\n".join(logs.output)
+        self.assertIn("status report before command response", output)
+        self.assertEqual(status.target_temperature, 26.0)
+        self.assertEqual(client.status.target_temperature, 26.0)
 
     async def test_async_query_status_fails_after_three_missed_heartbeats(self) -> None:
         client = HaierACClient(
@@ -342,7 +423,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             first_heartbeat[:4],
             first_heartbeat[4:16],
             first_heartbeat[16:],
-            command_response[:80],
+            command_response[:4],
+            command_response[4:80],
             command_response[80:],
             second_heartbeat[:4],
             second_heartbeat[4:16],
