@@ -42,6 +42,7 @@ class ProtocolBuildParseTest(unittest.TestCase):
 
     def test_build_heartbeat_uses_outer_heartbeat_layout(self) -> None:
         request = build_heartbeat(0, "00:07:A8:B2:62:79")
+        self.assertEqual(len(request), 64)
         self.assertEqual(
             request,
             b"\x00\x00\x5D\xF2"
@@ -66,6 +67,7 @@ class ProtocolBuildParseTest(unittest.TestCase):
 
     def test_parse_matching_heartbeat_response(self) -> None:
         response = _heartbeat_response(7, MAC)
+        self.assertEqual(len(response), 68)
         parse_heartbeat_response(response, 7, MAC)
 
         with self.assertRaises(InvalidPacketError):
@@ -186,6 +188,7 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             struct.pack(">I", 48),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
+            b"\x00" * 4,
             b"\x00" * 4,
         )
     )

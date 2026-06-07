@@ -186,11 +186,7 @@ class HaierACClient:
         if int.from_bytes(header[2:4], "big") == DataClass.HEARTBEAT_RESPONSE:
             length_bytes = await self._read_exactly(reader, 4)
             payload_len = int.from_bytes(length_bytes, "big")
-            payload = (
-                b""
-                if payload_len == 0
-                else await self._read_exactly(reader, payload_len)
-            )
+            payload = await self._read_heartbeat_response_payload(reader, payload_len)
             response = header + length_bytes + payload
         else:
             payload_len = int.from_bytes(header[8:12], "big")
@@ -244,6 +240,16 @@ class HaierACClient:
         self, reader: asyncio.StreamReader, n: int
     ) -> bytes:
         return await asyncio.wait_for(reader.readexactly(n), timeout=self.timeout)
+
+    async def _read_heartbeat_response_payload(
+        self, reader: asyncio.StreamReader, payload_len: int
+    ) -> bytes:
+        if payload_len == 0:
+            return b""
+        payload = await self._read_exactly(reader, payload_len)
+        if payload_len == 48:
+            payload += await self._read_exactly(reader, 4)
+        return payload
 
     async def _drain(self, writer: asyncio.StreamWriter) -> None:
         await asyncio.wait_for(writer.drain(), timeout=self.timeout)

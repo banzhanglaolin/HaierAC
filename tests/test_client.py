@@ -47,13 +47,14 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             name="Haier AC",
         )
         response = _heartbeat_response(0, client.mac)
-        reader = _Reader(response[:12], response[12:16], response[16:])
+        reader = _Reader(response[:12], response[12:16], response[16:64], response[64:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
             await client._exchange_heartbeat(reader, writer)
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+        self.assertEqual(reader.remaining_chunks, 0)
 
     async def test_exchange_heartbeat_accepts_short_outer_response(self) -> None:
         client = HaierACClient(
@@ -123,6 +124,10 @@ class _Reader:
             raise AssertionError(f"expected read size {n}, got {len(chunk)}")
         return chunk
 
+    @property
+    def remaining_chunks(self) -> int:
+        return len(self._chunks)
+
 
 class _Writer:
     def __init__(self) -> None:
@@ -145,6 +150,7 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             struct.pack(">I", 48),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
+            b"\x00" * 4,
             b"\x00" * 4,
         )
     )
