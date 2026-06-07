@@ -238,6 +238,23 @@ class ProtocolBuildParseTest(unittest.TestCase):
         self.assertFalse(status.aux_heat_on)
         self.assertTrue(status.health_on)
 
+    def test_build_set_state_coerces_fan_only_auto_speed_to_high(self) -> None:
+        frame = build_uart_set_state(
+            mode=Mode.FAN,
+            fan_speed=FanSpeed.AUTO,
+            fan_direction=FanDirection.OFF,
+            power_on=True,
+            target_temperature=24,
+        )
+
+        self.assertEqual(struct.unpack_from(">H", frame, 24)[0], FanSpeed.HIGH)
+
+        status = parse_uart_status(frame)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.mode, Mode.FAN)
+        self.assertEqual(status.fan_speed, FanSpeed.HIGH)
+
     def test_build_set_state_clears_power_options_when_power_off(self) -> None:
         frame = build_uart_set_state(
             mode=Mode.HEAT,
@@ -348,6 +365,19 @@ class ProtocolBuildParseTest(unittest.TestCase):
         self.assertTrue(status.aux_heat_on)
         self.assertTrue(status.health_on)
         self.assertEqual(status.target_temperature, 26)
+
+    def test_parse_report_coerces_fan_only_auto_speed_to_high(self) -> None:
+        frame = bytes.fromhex(
+            "ff ff 22 00 00 00 00 00 01 06 6d 01 00 1c 00 33 00 00 "
+            "00 00 00 00 00 03 00 03 00 00 00 01 00 00 00 00 00 0a f7"
+        )
+
+        status = parse_uart_status(frame)
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.mode, Mode.FAN)
+        self.assertEqual(status.fan_speed, FanSpeed.HIGH)
 
 
 def _heartbeat_response(message_id: int, mac: str) -> bytes:

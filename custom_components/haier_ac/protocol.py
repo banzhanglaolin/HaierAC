@@ -203,6 +203,7 @@ def build_uart_set_state(
     health_on: bool = False,
 ) -> bytes:
     """Build the longer UART command that carries full AC state."""
+    fan_speed = _fan_speed_for_mode(mode, fan_speed)
     target_raw = _encode_target_temperature(target_temperature)
     frame = bytearray()
     frame.extend(b"\xFF\xFF")
@@ -312,10 +313,14 @@ def parse_uart_status(frame: bytes) -> ACStatus | None:
 
 def _parse_report_layout(frame: bytes) -> ACStatus:
     power_options = _u16(frame, 28)
+    mode = _safe_int_enum(Mode, _u16(frame, 22), Mode.PMV)
+    fan_speed = _fan_speed_for_mode(
+        mode, _safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO)
+    )
     return ACStatus(
         power_on=bool(power_options & AC_STATE_ON),
-        mode=_safe_int_enum(Mode, _u16(frame, 22), Mode.PMV),
-        fan_speed=_safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO),
+        mode=mode,
+        fan_speed=fan_speed,
         fan_direction=_safe_int_enum(FanDirection, _u16(frame, 26), FanDirection.OFF),
         current_temperature=_plausible_temperature(_u16(frame, 12)),
         current_humidity=_plausible_humidity(_u16(frame, 14)),
@@ -327,10 +332,14 @@ def _parse_report_layout(frame: bytes) -> ACStatus:
 
 def _parse_set_state_layout(frame: bytes) -> ACStatus:
     power_options = _u16(frame, 28)
+    mode = _safe_int_enum(Mode, _u16(frame, 22), Mode.PMV)
+    fan_speed = _fan_speed_for_mode(
+        mode, _safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO)
+    )
     return ACStatus(
         power_on=bool(power_options & AC_STATE_ON),
-        mode=_safe_int_enum(Mode, _u16(frame, 22), Mode.PMV),
-        fan_speed=_safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO),
+        mode=mode,
+        fan_speed=fan_speed,
         fan_direction=_safe_int_enum(FanDirection, _u16(frame, 26), FanDirection.OFF),
         current_temperature=_plausible_temperature(_u16(frame, 12)),
         current_humidity=_plausible_humidity(_u16(frame, 14)),
@@ -342,6 +351,12 @@ def _parse_set_state_layout(frame: bytes) -> ACStatus:
 
 def _checksum(frame: bytearray) -> int:
     return sum(frame[2:-1]) & 0xFF
+
+
+def _fan_speed_for_mode(mode: Mode, fan_speed: FanSpeed) -> FanSpeed:
+    if mode == Mode.FAN and fan_speed == FanSpeed.AUTO:
+        return FanSpeed.HIGH
+    return fan_speed
 
 
 def _encode_power_options(

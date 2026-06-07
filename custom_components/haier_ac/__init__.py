@@ -53,7 +53,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaierACConfigEntry) -> 
     """Unload a config entry."""
     from .const import PLATFORMS
 
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.async_close()
+    return unload_ok
 
 
 def _async_schedule_discovery(hass: HomeAssistant) -> None:

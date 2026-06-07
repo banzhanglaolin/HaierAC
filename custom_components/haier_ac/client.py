@@ -17,13 +17,11 @@ from .protocol import (
     Mode,
     Subcommand,
     build_command,
-    build_disconnect,
     build_heartbeat,
     build_uart_set_state,
     build_uart_short_command,
     normalize_mac,
     parse_command_response,
-    parse_disconnect_response,
     parse_heartbeat_response,
 )
 
@@ -32,10 +30,15 @@ _LOGGER = logging.getLogger(__name__)
 _STARTUP_REPORT_FIRST_TIMEOUT = 2.0
 _STARTUP_REPORT_IDLE_TIMEOUT = 0.25
 _STARTUP_REPORT_LIMIT = 5
+_MAX_MISSED_HEARTBEATS = 3
 
 
 class HaierACCommunicationError(Exception):
     """Raised when communication with the air conditioner fails."""
+
+
+class _HeartbeatMissed(Exception):
+    """Raised when a heartbeat is missed but the device is not failed yet."""
 
 
 class HaierACClient:
@@ -58,6 +61,9 @@ class HaierACClient:
         self.status = ACStatus()
         self._message_id = 0
         self._lock = asyncio.Lock()
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._missed_heartbeats = 0
 
     async def async_test_connection(self) -> None:
         """Open a socket and perform the heartbeat handshake."""
@@ -85,6 +91,11 @@ class HaierACClient:
         if status is not None:
             self.status = status
         return self.status
+
+    async def async_close(self) -> None:
+        """Close the cached TCP connection."""
+        async with self._lock:
+            await self._close_connection()
 
     async def async_turn_on(self) -> ACStatus:
         """Turn the AC on."""
@@ -122,6 +133,12 @@ class HaierACClient:
         )
         if desired.aux_heat_on and (not desired.power_on or desired.mode != Mode.HEAT):
             desired = replace(desired, aux_heat_on=False)
+        if (
+            desired.power_on
+            and desired.mode == Mode.FAN
+            and desired.fan_speed == FanSpeed.AUTO
+        ):
+            desired = replace(desired, fan_speed=FanSpeed.HIGH)
         frame = build_uart_set_state(
             mode=desired.mode,
             fan_speed=desired.fan_speed,
@@ -141,16 +158,17 @@ class HaierACClient:
         self, uart_frame: bytes, *, use_startup_status: bool = False
     ) -> ACStatus | None:
         async with self._lock:
-            reader, writer = await self._open()
             try:
-                startup_status = await self._consume_startup_status_reports(reader)
-                heartbeat_status = await self._exchange_heartbeat(reader, writer)
-                status = heartbeat_status or startup_status
-                if use_startup_status and status is not None:
-                    self.status = status
-                    with suppress(Exception):
-                        await self._exchange_disconnect(reader, writer)
-                    return status
+                reader, writer, startup_status = await self._ensure_connection()
+                try:
+                    heartbeat_status = await self._exchange_heartbeat_with_retry(
+                        reader, writer
+                    )
+                except _HeartbeatMissed:
+                    return self.status
+                pre_command_status = heartbeat_status or startup_status
+                if pre_command_status is not None:
+                    self.status = pre_command_status
 
                 message_id = self._next_message_id()
                 request = build_command(message_id, self.mac, uart_frame)
@@ -196,21 +214,25 @@ class HaierACClient:
                         uart_payload,
                         message_id=message_id,
                     )
-                status = parse_command_response(
+                command_status = parse_command_response(
                     response, message_id, self.mac
                 )
 
-                with suppress(Exception):
-                    await self._exchange_disconnect(reader, writer)
-                return status
+                try:
+                    post_heartbeat_status = await self._exchange_heartbeat_with_retry(
+                        reader, writer
+                    )
+                except _HeartbeatMissed:
+                    return command_status or pre_command_status
+                return post_heartbeat_status or command_status or pre_command_status
             except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
+                await self._close_connection()
                 raise HaierACCommunicationError(
                     f"Failed to communicate with {self.host}:{self.port}"
                 ) from err
             except HaierProtocolError as err:
+                await self._close_connection()
                 raise HaierACCommunicationError(str(err)) from err
-            finally:
-                await self._close(writer)
 
     async def _open(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
@@ -221,6 +243,49 @@ class HaierACClient:
             raise HaierACCommunicationError(
                 f"Could not connect to {self.host}:{self.port}"
             ) from err
+
+    async def _ensure_connection(
+        self,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, ACStatus | None]:
+        """Return the cached TCP connection, opening it if needed."""
+        if (
+            self._reader is not None
+            and self._writer is not None
+            and not self._writer_is_closing(self._writer)
+        ):
+            return self._reader, self._writer, None
+
+        if self._writer is not None:
+            await self._close_connection()
+
+        reader, writer = await self._open()
+        self._reader = reader
+        self._writer = writer
+        startup_status = await self._consume_startup_status_reports(reader)
+        return reader, writer, startup_status
+
+    async def _exchange_heartbeat_with_retry(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> ACStatus | None:
+        """Exchange one heartbeat and tolerate a few consecutive no-responses."""
+        try:
+            status = await self._exchange_heartbeat(reader, writer)
+        except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
+            await self._close_connection()
+            self._missed_heartbeats += 1
+            _LOGGER.warning(
+                "Haier AC heartbeat missed from %s:%s (%s/%s)",
+                self.host,
+                self.port,
+                self._missed_heartbeats,
+                _MAX_MISSED_HEARTBEATS,
+            )
+            if self._missed_heartbeats < _MAX_MISSED_HEARTBEATS:
+                raise _HeartbeatMissed from err
+            raise
+        else:
+            self._missed_heartbeats = 0
+            return status
 
     async def _exchange_heartbeat(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -353,35 +418,6 @@ class HaierACClient:
             self.status = status
         return status
 
-    async def _exchange_disconnect(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        message_id = self._next_message_id()
-        request = build_disconnect(message_id)
-        _log_tcp_packet(
-            self.host,
-            self.port,
-            "disconnect request",
-            "to",
-            request,
-            message_id=message_id,
-        )
-        writer.write(request)
-        await self._drain(writer)
-        response = await self._read_exactly(reader, 16)
-        _log_tcp_packet(
-            self.host,
-            self.port,
-            "disconnect response",
-            "from",
-            response,
-            request_message_id=message_id,
-        )
-        try:
-            parse_disconnect_response(response, message_id)
-        except InvalidPacketError:
-            _LOGGER.debug("Ignoring invalid disconnect response", exc_info=True)
-
     async def _read_tcp_packet(
         self,
         reader: asyncio.StreamReader,
@@ -437,6 +473,20 @@ class HaierACClient:
         writer.close()
         with suppress(Exception):
             await writer.wait_closed()
+
+    async def _close_connection(self) -> None:
+        """Close and forget the cached TCP connection."""
+        writer = self._writer
+        self._reader = None
+        self._writer = None
+        if writer is not None:
+            await self._close(writer)
+
+    @staticmethod
+    def _writer_is_closing(writer: asyncio.StreamWriter) -> bool:
+        """Return whether a writer is already closing."""
+        is_closing = getattr(writer, "is_closing", None)
+        return bool(is_closing()) if callable(is_closing) else False
 
     def _next_message_id(self) -> int:
         message_id = self._message_id

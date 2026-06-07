@@ -34,6 +34,7 @@ FAN_MODE_TO_HAIER = {
     FAN_AUTO: FanSpeed.AUTO,
 }
 HAIER_TO_FAN_MODE = {value: key for key, value in FAN_MODE_TO_HAIER.items()}
+FAN_ONLY_FAN_MODES = [FAN_HIGH, FAN_MEDIUM, FAN_LOW]
 
 SWING_MODE_TO_HAIER = {
     SWING_OFF: FanDirection.OFF,
@@ -136,7 +137,19 @@ class HaierACClimate(ClimateEntity):
     @property
     def fan_mode(self) -> str:
         """Return the fan mode."""
+        if (
+            self._status.mode == Mode.FAN
+            and self._status.fan_speed == FanSpeed.AUTO
+        ):
+            return FAN_HIGH
         return HAIER_TO_FAN_MODE.get(self._status.fan_speed, FAN_AUTO)
+
+    @property
+    def fan_modes(self) -> list[str]:
+        """Return available fan modes."""
+        if self.hvac_mode == HVACMode.FAN_ONLY:
+            return FAN_ONLY_FAN_MODES
+        return list(FAN_MODE_TO_HAIER)
 
     @property
     def swing_mode(self) -> str:
@@ -193,8 +206,11 @@ class HaierACClimate(ClimateEntity):
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set a new fan mode."""
+        fan_speed = FAN_MODE_TO_HAIER[fan_mode]
+        if self.hvac_mode == HVACMode.FAN_ONLY and fan_speed == FanSpeed.AUTO:
+            fan_speed = FanSpeed.HIGH
         await self._run_command(
-            self._client.async_apply(fan_speed=FAN_MODE_TO_HAIER[fan_mode], power_on=True)
+            self._client.async_apply(fan_speed=fan_speed, power_on=True)
         )
 
     async def async_set_swing_mode(self, swing_mode: str) -> None:

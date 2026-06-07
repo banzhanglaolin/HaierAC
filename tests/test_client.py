@@ -17,6 +17,7 @@ from custom_components.haier_ac.protocol import (
     FanSpeed,
     InvalidPacketError,
     Mode,
+    build_command,
     build_heartbeat,
     build_uart_short_command,
     normalize_mac,
@@ -125,7 +126,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.status.target_temperature, 26.0)
         self.assertEqual(reader.remaining_chunks, 0)
 
-    async def test_async_query_status_uses_startup_status_without_command(self) -> None:
+    async def test_async_query_status_sends_command_between_heartbeats(self) -> None:
         client = HaierACClient(
             host="192.0.2.10",
             port=56800,
@@ -135,20 +136,26 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         )
         startup_status = ACStatus(power_on=True, target_temperature=26.0)
         writer = _Writer()
-        client._open = AsyncMock(return_value=(_Reader(), writer))
+        uart_frame = build_uart_short_command(Subcommand.QUERY_STATUS)
+        command_response = _command_response(0, client.mac, uart_frame)
+        client._open = AsyncMock(
+            return_value=(_Reader(command_response[:80], command_response[80:]), writer)
+        )
         client._consume_startup_status_reports = AsyncMock(return_value=startup_status)
         client._exchange_heartbeat = AsyncMock(return_value=None)
-        client._exchange_disconnect = AsyncMock()
         client._close = AsyncMock()
 
-        status = await client.async_query_status()
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            status = await client.async_query_status()
 
         self.assertEqual(status.target_temperature, 26.0)
         self.assertTrue(status.power_on)
-        self.assertEqual(writer.data, b"")
-        client._exchange_heartbeat.assert_awaited_once()
-        client._exchange_disconnect.assert_awaited_once()
-        client._close.assert_awaited_once_with(writer)
+        self.assertEqual(
+            writer.data,
+            build_command(0, client.mac, uart_frame),
+        )
+        self.assertEqual(client._exchange_heartbeat.await_count, 2)
+        client._close.assert_not_awaited()
 
     async def test_exchange_heartbeat_consumes_status_reports_until_heartbeat(self) -> None:
         client = HaierACClient(
@@ -214,8 +221,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         client._open = AsyncMock(return_value=(reader, writer))
         client._consume_startup_status_reports = AsyncMock()
-        client._exchange_heartbeat = AsyncMock()
-        client._exchange_disconnect = AsyncMock()
+        client._missed_heartbeats = 2
+        client._exchange_heartbeat = AsyncMock(return_value=None)
         client._close = AsyncMock()
 
         with patch(
@@ -235,6 +242,35 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("command UART response from 192.0.2.10:56800", output)
         self.assertIn("DATA_REQUEST(0x2714)", output)
         self.assertIn("DATA_RESPONSE(0x2715)", output)
+        self.assertEqual(client._exchange_heartbeat.await_count, 2)
+        self.assertEqual(client._missed_heartbeats, 0)
+        client._close.assert_not_awaited()
+
+    async def test_async_query_status_fails_after_three_missed_heartbeats(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        client.status = ACStatus(power_on=True, target_temperature=26.0)
+        client._open = AsyncMock(return_value=(_Reader(), _Writer()))
+        client._consume_startup_status_reports = AsyncMock(return_value=None)
+        client._exchange_heartbeat = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            first = await client.async_query_status()
+            second = await client.async_query_status()
+            with self.assertRaises(HaierACCommunicationError):
+                await client.async_query_status()
+
+        self.assertTrue(first.power_on)
+        self.assertTrue(second.power_on)
+        self.assertEqual(first.target_temperature, 26.0)
+        self.assertEqual(second.target_temperature, 26.0)
+        self.assertEqual(client._missed_heartbeats, 3)
+        self.assertEqual(client._exchange_heartbeat.await_count, 3)
 
     async def test_async_apply_clears_aux_heat_outside_heat_mode(self) -> None:
         client = HaierACClient(
@@ -265,7 +301,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status.aux_heat_on)
         self.assertTrue(status.health_on)
 
-    async def test_exchange_disconnect_logs_request_and_response(self) -> None:
+    async def test_async_apply_sets_high_fan_when_switching_to_fan_only(self) -> None:
         client = HaierACClient(
             host="192.0.2.10",
             port=56800,
@@ -273,18 +309,64 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             timeout=1,
             name="Haier AC",
         )
-        response = _disconnect_response(0)
-        reader = _Reader(response)
+        client.status = ACStatus(
+            power_on=True,
+            mode=Mode.COOL,
+            fan_speed=FanSpeed.AUTO,
+            fan_direction=FanDirection.OFF,
+            target_temperature=24,
+        )
+        client._send_uart = AsyncMock(return_value=None)
+
+        status = await client.async_apply(mode=Mode.FAN)
+
+        frame = client._send_uart.await_args.args[0]
+        self.assertEqual(struct.unpack_from(">H", frame, 22)[0], Mode.FAN)
+        self.assertEqual(struct.unpack_from(">H", frame, 24)[0], FanSpeed.HIGH)
+        self.assertEqual(status.mode, Mode.FAN)
+        self.assertEqual(status.fan_speed, FanSpeed.HIGH)
+
+    async def test_send_uart_keeps_tcp_open_and_sends_post_command_heartbeat(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        uart_frame = build_uart_short_command(Subcommand.QUERY_STATUS)
+        first_heartbeat = _heartbeat_response(0, client.mac)
+        command_response = _command_response(1, client.mac, uart_frame)
+        second_heartbeat = _heartbeat_response(2, client.mac)
+        reader = _Reader(
+            first_heartbeat[:4],
+            first_heartbeat[4:16],
+            first_heartbeat[16:],
+            command_response[:80],
+            command_response[80:],
+            second_heartbeat[:4],
+            second_heartbeat[4:16],
+            second_heartbeat[16:],
+        )
         writer = _Writer()
+        client._open = AsyncMock(return_value=(reader, writer))
+        client._consume_startup_status_reports = AsyncMock(return_value=None)
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
-            await client._exchange_disconnect(reader, writer)
+            await client._send_uart(uart_frame)
 
         output = "\n".join(logs.output)
-        self.assertIn("disconnect request to 192.0.2.10:56800", output)
-        self.assertIn("disconnect response from 192.0.2.10:56800", output)
-        self.assertIn("DISCONNECT_REQUEST(0x65F6)", output)
-        self.assertIn("DISCONNECT_RESPONSE(0x65F7)", output)
+        self.assertIn("heartbeat request to 192.0.2.10:56800", output)
+        self.assertIn("command request to 192.0.2.10:56800", output)
+        self.assertNotIn("DISCONNECT_REQUEST(0x65F6)", output)
+        self.assertNotIn("00 00 65 f6", writer.data.hex(" "))
+        self.assertEqual(
+            writer.data,
+            build_heartbeat(0, client.mac)
+            + build_command(1, client.mac, uart_frame)
+            + build_heartbeat(2, client.mac),
+        )
+        self.assertFalse(writer.closed)
 
 
 class _Reader:
@@ -307,11 +389,21 @@ class _Reader:
 class _Writer:
     def __init__(self) -> None:
         self.data = b""
+        self.closed = False
 
     def write(self, data: bytes) -> None:
         self.data += data
 
     async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    async def wait_closed(self) -> None:
         return None
 
 
