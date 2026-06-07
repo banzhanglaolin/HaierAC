@@ -204,6 +204,11 @@ def build_uart_set_state(
 
 def parse_heartbeat_response(data: bytes, message_id: int, mac: str) -> None:
     """Validate a local ping heartbeat response."""
+    if len(data) == 12 and _u16(data, 2) == DataClass.DATA_RESPONSE:
+        if _u32(data, 8) != 0:
+            raise InvalidPacketError("invalid heartbeat data response length")
+        return
+
     if len(data) == 16 and _u16(data, 2) == DataClass.HEARTBEAT_RESPONSE:
         if _u32(data, 8) != message_id:
             raise InvalidPacketError("unexpected heartbeat message id")

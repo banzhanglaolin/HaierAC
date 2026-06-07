@@ -50,7 +50,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         reader = _Reader(response[:12], response[12:])
         writer = _Writer()
 
-        await client._exchange_heartbeat(reader, writer)
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            await client._exchange_heartbeat(reader, writer)
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
@@ -66,9 +67,50 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         reader = _Reader(response[:12], response[12:])
         writer = _Writer()
 
-        await client._exchange_heartbeat(reader, writer)
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            await client._exchange_heartbeat(reader, writer)
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
+    async def test_exchange_heartbeat_accepts_empty_data_response(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        response = _empty_data_response()
+        reader = _Reader(response)
+        writer = _Writer()
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            await client._exchange_heartbeat(reader, writer)
+
+        self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
+    async def test_exchange_heartbeat_logs_request_and_response(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        response = _empty_data_response()
+        reader = _Reader(response)
+        writer = _Writer()
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+            await client._exchange_heartbeat(reader, writer)
+
+        output = "\n".join(logs.output)
+        self.assertIn("heartbeat request to 192.0.2.10:56800", output)
+        self.assertIn("message_id=0", output)
+        self.assertIn("41 41 42 42 43 43 44 44 45 45 46 46", output)
+        self.assertIn("heartbeat response from 192.0.2.10:56800", output)
+        self.assertIn("DATA_RESPONSE(0x2715)", output)
+        self.assertIn("00 00 27 15 00 00 00 00 00 00 00 00", output)
 
 
 class _Reader:
@@ -114,6 +156,16 @@ def _outer_heartbeat_response(message_id: int) -> bytes:
             b"\x00" * 4,
             struct.pack(">I", message_id),
             b"\x00" * 4,
+        )
+    )
+
+
+def _empty_data_response() -> bytes:
+    return b"".join(
+        (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.DATA_RESPONSE),
+            b"\x00" * 8,
         )
     )
 

@@ -99,9 +99,80 @@ class ConfigFlowLoggingTest(unittest.IsolatedAsyncioTestCase):
             {
                 "host": "10.16.45.36",
                 "mac": "0007A8B26279",
-                "name": "Xing_Qi_Wu",
+                "discovered_device_info": "e_1.3.03G_1.0.00eSDK_WIFI_AC",
             },
         )
+
+    async def test_discovery_defaults_do_not_prefill_name(self) -> None:
+        devices = [
+            types.SimpleNamespace(
+                host="10.16.45.36",
+                mac="0007A8B26279",
+                name="Xing_Qi_Wu",
+                module_type="eSDK_WIFI_AC",
+                firmware_version="e_1.3.03G_1.0.00",
+            )
+        ]
+
+        with patch.object(config_flow, "async_discover_devices", AsyncMock(return_value=devices)):
+            defaults = await config_flow._discover_defaults()
+
+        self.assertNotIn("name", defaults)
+
+    def test_description_placeholders_show_discovered_device_info(self) -> None:
+        placeholders = config_flow._description_placeholders(
+            {"discovered_device_info": "e_1.3.03G_1.0.00eSDK_WIFI_AC"}
+        )
+
+        self.assertEqual(
+            placeholders,
+            {"discovered_device_info": "e_1.3.03G_1.0.00eSDK_WIFI_AC"},
+        )
+
+    def test_timeout_schema_uses_text_input(self) -> None:
+        schema = config_flow._data_schema()
+
+        self.assertIs(schema["timeout"], str)
+
+    def test_validate_user_input_accepts_timeout_text(self) -> None:
+        data, errors = config_flow._validate_user_input(
+            {
+                "host": "10.16.45.36",
+                "port": 56800,
+                "mac": "0007A8B26279",
+                "timeout": "5",
+                "name": "Haier AC",
+            }
+        )
+
+        self.assertEqual(errors, {})
+        self.assertEqual(data["timeout"], 5)
+
+    def test_validate_user_input_rejects_invalid_timeout_text(self) -> None:
+        _, errors = config_flow._validate_user_input(
+            {
+                "host": "10.16.45.36",
+                "port": 56800,
+                "mac": "0007A8B26279",
+                "timeout": "fast",
+                "name": "Haier AC",
+            }
+        )
+
+        self.assertEqual(errors, {"timeout": "invalid_timeout"})
+
+    def test_validate_user_input_rejects_out_of_range_timeout(self) -> None:
+        _, errors = config_flow._validate_user_input(
+            {
+                "host": "10.16.45.36",
+                "port": 56800,
+                "mac": "0007A8B26279",
+                "timeout": "31",
+                "name": "Haier AC",
+            }
+        )
+
+        self.assertEqual(errors, {"timeout": "invalid_timeout"})
 
     async def test_discovery_defaults_ignore_discovery_failure(self) -> None:
         with patch.object(

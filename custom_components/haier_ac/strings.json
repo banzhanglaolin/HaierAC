@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Haier AC Local",
-        "description": "Enter the local network details for the Haier AC module.",
+        "description": "Enter the local network details for the Haier AC module.\n\nDiscovered module: {discovered_device_info}",
         "data": {
           "name": "Name",
           "host": "IP address",
@@ -27,7 +27,8 @@
     "error": {
       "cannot_connect": "Could not connect to the air conditioner. Check the IP address, port, MAC address, and network access.",
       "invalid_ip": "IP address is not valid.",
-      "invalid_mac": "MAC address must contain 12 hexadecimal characters."
+      "invalid_mac": "MAC address must contain 12 hexadecimal characters.",
+      "invalid_timeout": "Timeout must be a whole number between 1 and 30 seconds."
     },
     "abort": {
       "already_configured": "This air conditioner is already configured.",

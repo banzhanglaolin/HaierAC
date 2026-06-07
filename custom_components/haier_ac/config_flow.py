@@ -18,6 +18,8 @@ from .discovery import HaierACDiscoveryError, async_discover_devices
 from .protocol import InvalidPacketError, normalize_mac
 
 _LOGGER = logging.getLogger(__name__)
+_DISCOVERED_DEVICE_INFO = "discovered_device_info"
+_DISCOVERED_DEVICE_INFO_NONE = "Not discovered"
 
 
 class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -54,6 +56,7 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=_data_schema(defaults),
+            description_placeholders=_description_placeholders(defaults),
             errors=errors,
         )
 
@@ -111,9 +114,18 @@ async def _discover_defaults() -> dict[str, Any]:
         CONF_HOST: device.host,
         CONF_MAC: device.mac,
     }
-    if name:
-        defaults[CONF_NAME] = name
+    if device_info := _format_discovered_device_info(device):
+        defaults[_DISCOVERED_DEVICE_INFO] = device_info
     return defaults
+
+
+def _format_discovered_device_info(device: Any) -> str | None:
+    """Return read-only device information shown in the config flow."""
+    firmware_version = getattr(device, "firmware_version", None)
+    module_type = getattr(device, "module_type", None)
+    if firmware_version and module_type:
+        return f"{firmware_version}{module_type}"
+    return firmware_version or module_type
 
 
 async def _test_connection(data: dict[str, Any]) -> dict[str, str]:
@@ -158,7 +170,15 @@ def _validate_user_input(
 
     data[CONF_NAME] = (str(user_input.get(CONF_NAME) or DEFAULT_NAME)).strip()
     data[CONF_PORT] = int(user_input.get(CONF_PORT, DEFAULT_PORT))
-    data[CONF_TIMEOUT] = int(user_input.get(CONF_TIMEOUT, DEFAULT_TIMEOUT))
+    try:
+        timeout = int(str(user_input.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)).strip())
+    except ValueError:
+        errors[CONF_TIMEOUT] = "invalid_timeout"
+    else:
+        if 1 <= timeout <= 30:
+            data[CONF_TIMEOUT] = timeout
+        else:
+            errors[CONF_TIMEOUT] = "invalid_timeout"
     return data, errors
 
 
@@ -184,7 +204,17 @@ def _data_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         fields[vol.Required(CONF_MAC)] = str
 
     fields[
-        vol.Optional(CONF_TIMEOUT, default=defaults.get(CONF_TIMEOUT, DEFAULT_TIMEOUT))
-    ] = vol.All(vol.Coerce(int), vol.Range(min=1, max=30))
+        vol.Optional(CONF_TIMEOUT, default=str(defaults.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)))
+    ] = str
 
     return vol.Schema(fields)
+
+
+def _description_placeholders(defaults: dict[str, Any] | None = None) -> dict[str, str]:
+    """Return read-only values displayed in the config flow description."""
+    defaults = defaults or {}
+    return {
+        _DISCOVERED_DEVICE_INFO: str(
+            defaults.get(_DISCOVERED_DEVICE_INFO, _DISCOVERED_DEVICE_INFO_NONE)
+        )
+    }

@@ -167,7 +167,19 @@ class HaierACClient:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         message_id = self._next_message_id()
-        writer.write(build_heartbeat(message_id, self.mac))
+        request = build_heartbeat(message_id, self.mac)
+        _LOGGER.warning(
+            "Haier AC heartbeat request to %s:%s: message_id=%s mac=%s "
+            "length=%s hex=%s ascii=%r",
+            self.host,
+            self.port,
+            message_id,
+            self.mac,
+            len(request),
+            request.hex(" "),
+            _format_ascii(request),
+        )
+        writer.write(request)
         await self._drain(writer)
 
         header = await self._read_exactly(reader, 12)
@@ -175,7 +187,26 @@ class HaierACClient:
             response = header + await self._read_exactly(reader, 4)
         else:
             payload_len = int.from_bytes(header[8:12], "big")
-            response = header + await self._read_exactly(reader, payload_len)
+            payload = (
+                b""
+                if payload_len == 0
+                else await self._read_exactly(reader, payload_len)
+            )
+            response = header + payload
+
+        _LOGGER.warning(
+            "Haier AC heartbeat response from %s:%s: request_message_id=%s "
+            "type=%s u32_at_4=%s u32_at_8=%s length=%s hex=%s ascii=%r",
+            self.host,
+            self.port,
+            message_id,
+            _format_data_class(response),
+            int.from_bytes(response[4:8], "big") if len(response) >= 8 else None,
+            int.from_bytes(response[8:12], "big") if len(response) >= 12 else None,
+            len(response),
+            response.hex(" "),
+            _format_ascii(response),
+        )
 
         try:
             parse_heartbeat_response(response, message_id, self.mac)
@@ -223,3 +254,14 @@ class HaierACClient:
 
 def _format_ascii(data: bytes) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+
+
+def _format_data_class(data: bytes) -> str:
+    if len(data) < 4:
+        return "unknown"
+    value = int.from_bytes(data[2:4], "big")
+    try:
+        data_class = DataClass(value)
+    except ValueError:
+        return f"0x{value:04X}"
+    return f"{data_class.name}(0x{value:04X})"
