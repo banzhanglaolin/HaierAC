@@ -184,7 +184,14 @@ class HaierACClient:
 
         header = await self._read_exactly(reader, 12)
         if int.from_bytes(header[2:4], "big") == DataClass.HEARTBEAT_RESPONSE:
-            response = header + await self._read_exactly(reader, 4)
+            length_bytes = await self._read_exactly(reader, 4)
+            payload_len = int.from_bytes(length_bytes, "big")
+            payload = (
+                b""
+                if payload_len == 0
+                else await self._read_exactly(reader, payload_len)
+            )
+            response = header + length_bytes + payload
         else:
             payload_len = int.from_bytes(header[8:12], "big")
             payload = (

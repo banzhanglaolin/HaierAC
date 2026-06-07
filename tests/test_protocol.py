@@ -40,10 +40,11 @@ class ProtocolBuildParseTest(unittest.TestCase):
         with self.assertRaises(InvalidPacketError):
             normalize_mac("AABBCCDDEEF")
 
-    def test_build_heartbeat_uses_local_ping_layout(self) -> None:
+    def test_build_heartbeat_uses_outer_heartbeat_layout(self) -> None:
         request = build_heartbeat(0, "00:07:A8:B2:62:79")
         self.assertEqual(
             request,
+            b"\x00\x00\x5D\xF2"
             b"\x00\x00\x00\x00"
             b"\x00\x00\x00\x00"
             b"\x00\x00\x00\x30"
@@ -61,7 +62,7 @@ class ProtocolBuildParseTest(unittest.TestCase):
 
     def test_build_heartbeat_inserts_supplied_mac(self) -> None:
         request = build_heartbeat(0, "11:22:33:44:55:66")
-        self.assertEqual(request[44:56], b"112233445566")
+        self.assertEqual(request[48:60], b"112233445566")
 
     def test_parse_matching_heartbeat_response(self) -> None:
         response = _heartbeat_response(7, MAC)
@@ -178,12 +179,14 @@ class ProtocolBuildParseTest(unittest.TestCase):
 def _heartbeat_response(message_id: int, mac: str) -> bytes:
     return b"".join(
         (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
             b"\x00" * 4,
             struct.pack(">I", message_id),
-            struct.pack(">I", 52),
+            struct.pack(">I", 48),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
-            b"\x00" * 8,
+            b"\x00" * 4,
         )
     )
 

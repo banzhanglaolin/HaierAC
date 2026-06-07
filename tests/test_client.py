@@ -38,7 +38,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
 
         client._close.assert_awaited_once_with(writer)
 
-    async def test_exchange_heartbeat_uses_local_ping_layout(self) -> None:
+    async def test_exchange_heartbeat_uses_outer_heartbeat_layout(self) -> None:
         client = HaierACClient(
             host="192.0.2.10",
             port=56800,
@@ -47,7 +47,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             name="Haier AC",
         )
         response = _heartbeat_response(0, client.mac)
-        reader = _Reader(response[:12], response[12:])
+        reader = _Reader(response[:12], response[12:16], response[16:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
@@ -138,12 +138,14 @@ class _Writer:
 def _heartbeat_response(message_id: int, mac: str) -> bytes:
     return b"".join(
         (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
             b"\x00" * 4,
             struct.pack(">I", message_id),
-            struct.pack(">I", 52),
+            struct.pack(">I", 48),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
-            b"\x00" * 8,
+            b"\x00" * 4,
         )
     )
 
