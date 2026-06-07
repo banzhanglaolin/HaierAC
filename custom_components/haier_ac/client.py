@@ -131,14 +131,51 @@ class HaierACClient:
             try:
                 await self._exchange_heartbeat(reader, writer)
                 message_id = self._next_message_id()
-                writer.write(build_command(message_id, self.mac, uart_frame))
+                request = build_command(message_id, self.mac, uart_frame)
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "command request",
+                    "to",
+                    request,
+                    message_id=message_id,
+                    uart_length=len(uart_frame),
+                )
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "command UART request",
+                    "to",
+                    uart_frame,
+                    message_id=message_id,
+                )
+                writer.write(request)
                 await self._drain(writer)
 
                 prefix = await self._read_exactly(reader, 80)
                 uart_len = int.from_bytes(prefix[76:80], "big")
                 uart_payload = await self._read_exactly(reader, uart_len)
+                response = prefix + uart_payload
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "command response",
+                    "from",
+                    response,
+                    message_id=message_id,
+                    uart_length=uart_len,
+                )
+                if uart_payload:
+                    _log_tcp_packet(
+                        self.host,
+                        self.port,
+                        "command UART response",
+                        "from",
+                        uart_payload,
+                        message_id=message_id,
+                    )
                 status = parse_command_response(
-                    prefix + uart_payload, message_id, self.mac
+                    response, message_id, self.mac
                 )
 
                 with suppress(Exception):
@@ -168,16 +205,14 @@ class HaierACClient:
     ) -> None:
         message_id = self._next_message_id()
         request = build_heartbeat(message_id, self.mac)
-        _LOGGER.warning(
-            "Haier AC heartbeat request to %s:%s: message_id=%s mac=%s "
-            "length=%s hex=%s ascii=%r",
+        _log_tcp_packet(
             self.host,
             self.port,
-            message_id,
-            self.mac,
-            len(request),
-            request.hex(" "),
-            _format_ascii(request),
+            "heartbeat request",
+            "to",
+            request,
+            message_id=message_id,
+            mac=self.mac,
         )
         writer.write(request)
         await self._drain(writer)
@@ -197,18 +232,13 @@ class HaierACClient:
             )
             response = header + payload
 
-        _LOGGER.warning(
-            "Haier AC heartbeat response from %s:%s: request_message_id=%s "
-            "type=%s u32_at_4=%s u32_at_8=%s length=%s hex=%s ascii=%r",
+        _log_tcp_packet(
             self.host,
             self.port,
-            message_id,
-            _format_data_class(response),
-            int.from_bytes(response[4:8], "big") if len(response) >= 8 else None,
-            int.from_bytes(response[8:12], "big") if len(response) >= 12 else None,
-            len(response),
-            response.hex(" "),
-            _format_ascii(response),
+            "heartbeat response",
+            "from",
+            response,
+            request_message_id=message_id,
         )
 
         try:
@@ -228,9 +258,26 @@ class HaierACClient:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         message_id = self._next_message_id()
-        writer.write(build_disconnect(message_id))
+        request = build_disconnect(message_id)
+        _log_tcp_packet(
+            self.host,
+            self.port,
+            "disconnect request",
+            "to",
+            request,
+            message_id=message_id,
+        )
+        writer.write(request)
         await self._drain(writer)
         response = await self._read_exactly(reader, 16)
+        _log_tcp_packet(
+            self.host,
+            self.port,
+            "disconnect response",
+            "from",
+            response,
+            request_message_id=message_id,
+        )
         try:
             parse_disconnect_response(response, message_id)
         except InvalidPacketError:
@@ -267,6 +314,35 @@ class HaierACClient:
 
 def _format_ascii(data: bytes) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+
+
+def _log_tcp_packet(
+    host: str,
+    port: int,
+    label: str,
+    direction: str,
+    data: bytes,
+    **fields: object,
+) -> None:
+    details = {
+        **fields,
+        "type": _format_data_class(data),
+        "u32_at_4": int.from_bytes(data[4:8], "big") if len(data) >= 8 else None,
+        "u32_at_8": int.from_bytes(data[8:12], "big") if len(data) >= 12 else None,
+        "u32_at_12": int.from_bytes(data[12:16], "big") if len(data) >= 16 else None,
+        "length": len(data),
+    }
+    detail_text = " ".join(f"{key}={value}" for key, value in details.items())
+    _LOGGER.warning(
+        "Haier AC %s %s %s:%s: %s hex=%s ascii=%r",
+        label,
+        direction,
+        host,
+        port,
+        detail_text,
+        data.hex(" "),
+        _format_ascii(data),
+    )
 
 
 def _format_data_class(data: bytes) -> str:

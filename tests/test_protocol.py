@@ -80,12 +80,11 @@ class ProtocolBuildParseTest(unittest.TestCase):
         with self.assertRaises(InvalidPacketError):
             parse_heartbeat_response(response, 8, MAC)
 
-    def test_parse_empty_data_response_as_heartbeat_ack(self) -> None:
+    def test_parse_empty_data_response_rejected_as_heartbeat(self) -> None:
         response = _empty_data_response()
-        parse_heartbeat_response(response, 7, MAC)
 
         with self.assertRaises(InvalidPacketError):
-            parse_heartbeat_response(response[:-1] + b"\x01", 7, MAC)
+            parse_heartbeat_response(response, 7, MAC)
 
     def test_build_short_uart_command(self) -> None:
         frame = build_uart_short_command(Subcommand.QUERY_STATUS)

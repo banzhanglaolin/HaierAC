@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import struct
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from custom_components.haier_ac.client import HaierACClient, HaierACCommunicationError
 from custom_components.haier_ac.protocol import (
+    ACStatus,
     DataClass,
     InvalidPacketError,
     build_heartbeat,
+    build_uart_short_command,
     normalize_mac,
+    Subcommand,
 )
 
 
@@ -73,7 +76,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
-    async def test_exchange_heartbeat_accepts_empty_data_response(self) -> None:
+    async def test_exchange_heartbeat_rejects_empty_data_response(self) -> None:
         client = HaierACClient(
             host="192.0.2.10",
             port=56800,
@@ -86,7 +89,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
-            await client._exchange_heartbeat(reader, writer)
+            with self.assertRaises(InvalidPacketError):
+                await client._exchange_heartbeat(reader, writer)
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
@@ -103,7 +107,8 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
-            await client._exchange_heartbeat(reader, writer)
+            with self.assertRaises(InvalidPacketError):
+                await client._exchange_heartbeat(reader, writer)
 
         output = "\n".join(logs.output)
         self.assertIn("heartbeat request to 192.0.2.10:56800", output)
@@ -112,6 +117,61 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("heartbeat response from 192.0.2.10:56800", output)
         self.assertIn("DATA_RESPONSE(0x2715)", output)
         self.assertIn("00 00 27 15 00 00 00 00 00 00 00 00", output)
+
+    async def test_send_uart_logs_command_and_uart_packets(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        response = _command_response(1, client.mac, b"\xFF\xFF\x00")
+        reader = _Reader(response[:80], response[80:])
+        writer = _Writer()
+        client._open = AsyncMock(return_value=(reader, writer))
+        client._exchange_heartbeat = AsyncMock()
+        client._exchange_disconnect = AsyncMock()
+        client._close = AsyncMock()
+
+        with patch(
+            "custom_components.haier_ac.client.parse_command_response",
+            return_value=ACStatus(),
+        ):
+            with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+                status = await client._send_uart(
+                    build_uart_short_command(Subcommand.QUERY_STATUS)
+                )
+
+        self.assertIsInstance(status, ACStatus)
+        output = "\n".join(logs.output)
+        self.assertIn("command request to 192.0.2.10:56800", output)
+        self.assertIn("command UART request to 192.0.2.10:56800", output)
+        self.assertIn("command response from 192.0.2.10:56800", output)
+        self.assertIn("command UART response from 192.0.2.10:56800", output)
+        self.assertIn("DATA_REQUEST(0x2714)", output)
+        self.assertIn("DATA_RESPONSE(0x2715)", output)
+
+    async def test_exchange_disconnect_logs_request_and_response(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        response = _disconnect_response(0)
+        reader = _Reader(response)
+        writer = _Writer()
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+            await client._exchange_disconnect(reader, writer)
+
+        output = "\n".join(logs.output)
+        self.assertIn("disconnect request to 192.0.2.10:56800", output)
+        self.assertIn("disconnect response from 192.0.2.10:56800", output)
+        self.assertIn("DISCONNECT_REQUEST(0x65F6)", output)
+        self.assertIn("DISCONNECT_RESPONSE(0x65F7)", output)
 
 
 class _Reader:
@@ -174,6 +234,33 @@ def _empty_data_response() -> bytes:
             b"\x00\x00",
             struct.pack(">H", DataClass.DATA_RESPONSE),
             b"\x00" * 8,
+        )
+    )
+
+
+def _command_response(message_id: int, mac: str, uart_frame: bytes) -> bytes:
+    return b"".join(
+        (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.DATA_RESPONSE),
+            b"\x00" * 36,
+            normalize_mac(mac).encode("ascii"),
+            b"\x00" * 20,
+            struct.pack(">I", message_id),
+            struct.pack(">I", len(uart_frame)),
+            uart_frame,
+        )
+    )
+
+
+def _disconnect_response(message_id: int) -> bytes:
+    return b"".join(
+        (
+            b"\x00\x00",
+            struct.pack(">H", DataClass.DISCONNECT_RESPONSE),
+            b"\x00" * 4,
+            struct.pack(">I", message_id),
+            b"\x00" * 4,
         )
     )
 

@@ -206,37 +206,26 @@ def build_uart_set_state(
 
 def parse_heartbeat_response(data: bytes, message_id: int, mac: str) -> None:
     """Validate a heartbeat response."""
-    if len(data) == 12 and _u16(data, 2) == DataClass.DATA_RESPONSE:
-        if _u32(data, 8) != 0:
-            raise InvalidPacketError("invalid heartbeat data response length")
-        return
+    if len(data) < 4:
+        raise InvalidPacketError("heartbeat response too short")
+    if _u16(data, 2) != DataClass.HEARTBEAT_RESPONSE:
+        raise InvalidPacketError("unexpected heartbeat response type")
 
-    if len(data) >= 4 and _u16(data, 2) == DataClass.HEARTBEAT_RESPONSE:
-        if len(data) == 16:
-            if _u32(data, 8) != message_id:
-                raise InvalidPacketError("unexpected heartbeat message id")
-            if _u32(data, 12) != 0:
-                raise InvalidPacketError("invalid heartbeat payload length")
-            return
-        if len(data) < 64:
-            raise InvalidPacketError("heartbeat response too short")
+    if len(data) == 16:
         if _u32(data, 8) != message_id:
             raise InvalidPacketError("unexpected heartbeat message id")
-        expected_len = _u32(data, 12) + 20
-        if expected_len != len(data):
+        if _u32(data, 12) != 0:
             raise InvalidPacketError("invalid heartbeat payload length")
-        if data[48:60].decode("ascii", errors="ignore") != normalize_mac(mac):
-            raise InvalidPacketError("unexpected heartbeat MAC address")
         return
 
-    if len(data) < 60:
+    if len(data) < 64:
         raise InvalidPacketError("heartbeat response too short")
-    if _u32(data, 4) != message_id:
+    if _u32(data, 8) != message_id:
         raise InvalidPacketError("unexpected heartbeat message id")
-    expected_len = _u32(data, 8) + 12
+    expected_len = _u32(data, 12) + 20
     if expected_len != len(data):
         raise InvalidPacketError("invalid heartbeat payload length")
-    if data[44:56].decode("ascii", errors="ignore") != normalize_mac(mac):
+    if data[48:60].decode("ascii", errors="ignore") != normalize_mac(mac):
         raise InvalidPacketError("unexpected heartbeat MAC address")
 
 
