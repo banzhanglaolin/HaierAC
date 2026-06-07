@@ -9,9 +9,14 @@ from unittest.mock import AsyncMock, patch
 
 from custom_components.haier_ac.client import HaierACClient, HaierACCommunicationError
 from custom_components.haier_ac.protocol import (
+    AC_AUX_HEAT_ON,
+    AC_HEALTH_ON,
     ACStatus,
     DataClass,
+    FanDirection,
+    FanSpeed,
     InvalidPacketError,
+    Mode,
     build_heartbeat,
     build_uart_short_command,
     normalize_mac,
@@ -230,6 +235,35 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("command UART response from 192.0.2.10:56800", output)
         self.assertIn("DATA_REQUEST(0x2714)", output)
         self.assertIn("DATA_RESPONSE(0x2715)", output)
+
+    async def test_async_apply_clears_aux_heat_outside_heat_mode(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        client.status = ACStatus(
+            power_on=True,
+            mode=Mode.HEAT,
+            fan_speed=FanSpeed.AUTO,
+            fan_direction=FanDirection.OFF,
+            target_temperature=24,
+            aux_heat_on=True,
+            health_on=True,
+        )
+        client._send_uart = AsyncMock(return_value=None)
+
+        status = await client.async_apply(mode=Mode.COOL)
+
+        frame = client._send_uart.await_args.args[0]
+        power_options = struct.unpack_from(">H", frame, 28)[0]
+        self.assertFalse(power_options & AC_AUX_HEAT_ON)
+        self.assertTrue(power_options & AC_HEALTH_ON)
+        self.assertEqual(status.mode, Mode.COOL)
+        self.assertFalse(status.aux_heat_on)
+        self.assertTrue(status.health_on)
 
     async def test_exchange_disconnect_logs_request_and_response(self) -> None:
         client = HaierACClient(

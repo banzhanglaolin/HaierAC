@@ -216,7 +216,11 @@ def build_uart_set_state(
     frame.extend(struct.pack(">H", mode))
     frame.extend(struct.pack(">H", fan_speed))
     frame.extend(struct.pack(">H", fan_direction))
-    frame.extend(struct.pack(">H", _encode_power_options(power_on, aux_heat_on, health_on)))
+    frame.extend(
+        struct.pack(
+            ">H", _encode_power_options(power_on, mode, aux_heat_on, health_on)
+        )
+    )
     frame.extend(b"\x00" * 4)
     frame.extend(struct.pack(">H", target_raw))
     frame.append(0)
@@ -341,13 +345,16 @@ def _checksum(frame: bytearray) -> int:
 
 
 def _encode_power_options(
-    power_on: bool, aux_heat_on: bool = False, health_on: bool = False
+    power_on: bool,
+    mode: Mode,
+    aux_heat_on: bool = False,
+    health_on: bool = False,
 ) -> int:
     if not power_on:
         return 0
     value = 0
     value |= AC_STATE_ON
-    if aux_heat_on:
+    if aux_heat_on and mode == Mode.HEAT:
         value |= AC_AUX_HEAT_ON
     if health_on:
         value |= AC_HEALTH_ON

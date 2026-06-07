@@ -120,6 +120,8 @@ class HaierACClient:
             if target_temperature is not None
             else self.status.target_temperature,
         )
+        if desired.aux_heat_on and (not desired.power_on or desired.mode != Mode.HEAT):
+            desired = replace(desired, aux_heat_on=False)
         frame = build_uart_set_state(
             mode=desired.mode,
             fan_speed=desired.fan_speed,

@@ -217,6 +217,27 @@ class ProtocolBuildParseTest(unittest.TestCase):
         self.assertTrue(status.aux_heat_on)
         self.assertTrue(status.health_on)
 
+    def test_build_set_state_ignores_aux_heat_outside_heat_mode(self) -> None:
+        frame = build_uart_set_state(
+            mode=Mode.COOL,
+            fan_speed=FanSpeed.AUTO,
+            fan_direction=FanDirection.BOTH,
+            power_on=True,
+            target_temperature=24,
+            aux_heat_on=True,
+            health_on=True,
+        )
+
+        power_options = struct.unpack_from(">H", frame, 28)[0]
+        self.assertEqual(power_options, AC_STATE_ON | AC_HEALTH_ON)
+
+        status = parse_uart_status(frame)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertTrue(status.power_on)
+        self.assertFalse(status.aux_heat_on)
+        self.assertTrue(status.health_on)
+
     def test_build_set_state_clears_power_options_when_power_off(self) -> None:
         frame = build_uart_set_state(
             mode=Mode.HEAT,
