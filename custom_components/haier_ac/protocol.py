@@ -110,11 +110,9 @@ def normalize_mac(mac: str) -> str:
 
 
 def build_heartbeat(message_id: int, mac: str) -> bytes:
-    """Build an outer heartbeat request."""
+    """Build a local ping heartbeat request."""
     return b"".join(
         (
-            b"\x00\x00",
-            struct.pack(">H", DataClass.HEARTBEAT_REQUEST),
             b"\x00" * 4,
             struct.pack(">I", message_id),
             struct.pack(">I", 48),
@@ -205,17 +203,15 @@ def build_uart_set_state(
 
 
 def parse_heartbeat_response(data: bytes, message_id: int, mac: str) -> None:
-    """Validate an outer heartbeat response."""
-    if len(data) < 64:
+    """Validate a local ping heartbeat response."""
+    if len(data) < 60:
         raise InvalidPacketError("heartbeat response too short")
-    if _u16(data, 2) != DataClass.HEARTBEAT_RESPONSE:
-        raise InvalidPacketError("unexpected heartbeat response type")
-    if _u32(data, 8) != message_id:
+    if _u32(data, 4) != message_id:
         raise InvalidPacketError("unexpected heartbeat message id")
-    expected_len = _u32(data, 12) + 16
+    expected_len = _u32(data, 8) + 12
     if expected_len != len(data):
         raise InvalidPacketError("invalid heartbeat payload length")
-    if data[48:60].decode("ascii", errors="ignore") != normalize_mac(mac):
+    if data[44:56].decode("ascii", errors="ignore") != normalize_mac(mac):
         raise InvalidPacketError("unexpected heartbeat MAC address")
 
 

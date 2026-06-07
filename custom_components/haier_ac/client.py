@@ -169,8 +169,8 @@ class HaierACClient:
         writer.write(build_heartbeat(message_id, self.mac))
         await self._drain(writer)
 
-        header = await self._read_exactly(reader, 16)
-        payload_len = int.from_bytes(header[12:16], "big")
+        header = await self._read_exactly(reader, 12)
+        payload_len = int.from_bytes(header[8:12], "big")
         payload = await self._read_exactly(reader, payload_len)
         parse_heartbeat_response(header + payload, message_id, self.mac)
 
