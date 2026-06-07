@@ -88,6 +88,16 @@ config_flow = importlib.import_module("custom_components.haier_ac.config_flow")
 class ConfigFlowLoggingTest(unittest.IsolatedAsyncioTestCase):
     """Exercise connection failure logging used by setup and reconfigure."""
 
+    async def test_user_step_shows_manual_config_form(self) -> None:
+        flow = config_flow.HaierACConfigFlow()
+
+        with patch.object(config_flow, "_discover_defaults", AsyncMock(return_value={})):
+            result = await flow.async_step_user()
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["step_id"], "user")
+        self.assertIn("data_schema", result)
+
     async def test_connection_failure_is_logged(self) -> None:
         data = {
             "host": "10.16.45.36",
@@ -285,22 +295,6 @@ class ConfigFlowLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "form")
         self.assertEqual(result["step_id"], "discovery_confirm")
         self.assertEqual(result["errors"], {"base": "cannot_connect"})
-
-    async def test_async_has_devices_uses_udp_discovery(self) -> None:
-        with patch.object(
-            config_flow,
-            "async_discover_devices",
-            AsyncMock(return_value=[object()]),
-        ):
-            self.assertTrue(await config_flow._async_has_devices(object()))
-
-    async def test_async_has_devices_ignores_discovery_failure(self) -> None:
-        with patch.object(
-            config_flow,
-            "async_discover_devices",
-            AsyncMock(side_effect=config_flow.HaierACDiscoveryError("no socket")),
-        ):
-            self.assertFalse(await config_flow._async_has_devices(object()))
 
 if __name__ == "__main__":
     unittest.main()

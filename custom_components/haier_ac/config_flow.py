@@ -11,7 +11,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import config_entry_flow
 
 from .client import HaierACClient, HaierACCommunicationError
 from .const import (
@@ -217,15 +216,6 @@ def _discovery_description_placeholders(
     }
 
 
-async def _async_has_devices(hass: Any) -> bool:
-    """Return whether a Haier AC device can be discovered."""
-    try:
-        return bool(await async_discover_devices())
-    except HaierACDiscoveryError as err:
-        _LOGGER.debug("Could not run Haier AC UDP discovery: %s", err)
-        return False
-
-
 async def _test_connection(data: dict[str, Any]) -> dict[str, str]:
     """Test the local connection before storing a config entry."""
     client = HaierACClient(
@@ -318,6 +308,3 @@ def _description_placeholders(defaults: dict[str, Any] | None = None) -> dict[st
             defaults.get(_DISCOVERED_DEVICE_INFO, _DISCOVERED_DEVICE_INFO_NONE)
         )
     }
-
-
-config_entry_flow.register_discovery_flow(DOMAIN, DEFAULT_NAME, _async_has_devices)
