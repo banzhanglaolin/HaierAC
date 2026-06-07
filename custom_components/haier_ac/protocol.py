@@ -33,7 +33,19 @@ class DataClass(IntEnum):
 
 
 class UartFrameType(IntEnum):
-    """Inner UART frame types."""
+    """Inner UART control byte types."""
+
+    QUERY_OR_SET = 0x01
+    RETURN_DATA = 0x02
+    INVALID_COMMAND = 0x03
+    ALARM_REPORT = 0x04
+    ACK = 0x05
+    ACTIVE_REPORT = 0x06
+    STOP_FAULT_ALARM = 0x09
+    ALARM = 0x73
+    ALARM_RESPONSE = 0x74
+    GET_NETWORK_STATUS = 0xF0
+    GET_NETWORK_STATUS_RESPONSE = 0xF1
 
     CONTROL = 0x01
     STATUS = 0x02
@@ -41,11 +53,15 @@ class UartFrameType(IntEnum):
     ALARM_STATUS = 0x04
     CONFIRM = 0x05
     REPORT = 0x06
-    STOP_FAULT_ALARM = 0x09
     GET_ALARM_STATUS = 0x73
     GET_ALARM_STATUS_RESPONSE = 0x74
-    GET_NETWORK_STATUS = 0xF0
-    GET_NETWORK_STATUS_RESPONSE = 0xF1
+
+
+class UartDirection(IntEnum):
+    """Inner UART frame directions."""
+
+    MODULE_TO_BOARD = 0x0000
+    BOARD_TO_MODULE = 0x0001
 
 
 class Subcommand(IntEnum):
@@ -161,11 +177,11 @@ def build_uart_short_command(subcommand: Subcommand) -> bytes:
     frame.extend(b"\xFF\xFF")
     frame.append(0)
     frame.extend(b"\x00" * 4)
-    frame.append(0)
-    frame.append(UartFrameType.CONTROL)
+    frame.extend(struct.pack(">H", UartDirection.MODULE_TO_BOARD))
+    frame.append(UartFrameType.QUERY_OR_SET)
     frame.extend(struct.pack(">H", subcommand))
     frame.append(0)
-    frame[2] = len(frame) - 2
+    frame[2] = len(frame) - 3
     frame[-1] = _checksum(frame)
     return bytes(frame)
 
@@ -186,8 +202,8 @@ def build_uart_set_state(
     frame.extend(b"\xFF\xFF")
     frame.append(0)
     frame.extend(b"\x00" * 4)
-    frame.append(0)
-    frame.append(UartFrameType.CONTROL)
+    frame.extend(struct.pack(">H", UartDirection.MODULE_TO_BOARD))
+    frame.append(UartFrameType.QUERY_OR_SET)
     frame.extend(struct.pack(">H", Subcommand.SET_STATE))
     frame.extend(struct.pack(">H", int(current_temperature or 0)))
     frame.extend(struct.pack(">H", int(current_humidity or 0)))
@@ -295,13 +311,13 @@ def _parse_report_layout(frame: bytes) -> ACStatus:
 
 def _parse_set_state_layout(frame: bytes) -> ACStatus:
     return ACStatus(
-        power_on=bool(frame[24] & AC_STATE_ON),
-        mode=_safe_int_enum(Mode, frame[21], Mode.PMV),
-        fan_speed=_safe_int_enum(FanSpeed, frame[22], FanSpeed.AUTO),
-        fan_direction=_safe_int_enum(FanDirection, frame[23], FanDirection.OFF),
-        current_temperature=_plausible_temperature(_u16(frame, 11)),
-        current_humidity=_plausible_humidity(_u16(frame, 13)),
-        target_temperature=_decode_target_temperature(_u16(frame, 29)),
+        power_on=bool(frame[25] & AC_STATE_ON),
+        mode=_safe_int_enum(Mode, frame[22], Mode.PMV),
+        fan_speed=_safe_int_enum(FanSpeed, frame[23], FanSpeed.AUTO),
+        fan_direction=_safe_int_enum(FanDirection, frame[24], FanDirection.OFF),
+        current_temperature=_plausible_temperature(_u16(frame, 12)),
+        current_humidity=_plausible_humidity(_u16(frame, 14)),
+        target_temperature=_decode_target_temperature(_u16(frame, 30)),
     )
 
 

@@ -13,6 +13,8 @@ from custom_components.haier_ac.protocol import (
     InvalidPacketError,
     Mode,
     Subcommand,
+    UartDirection,
+    UartFrameType,
     build_command,
     build_heartbeat,
     build_uart_set_state,
@@ -86,12 +88,41 @@ class ProtocolBuildParseTest(unittest.TestCase):
         with self.assertRaises(InvalidPacketError):
             parse_heartbeat_response(response, 7, MAC)
 
+    def test_uart_frame_type_values(self) -> None:
+        self.assertEqual(UartFrameType.QUERY_OR_SET, 0x01)
+        self.assertEqual(UartFrameType.RETURN_DATA, 0x02)
+        self.assertEqual(UartFrameType.INVALID_COMMAND, 0x03)
+        self.assertEqual(UartFrameType.ALARM_REPORT, 0x04)
+        self.assertEqual(UartFrameType.ACK, 0x05)
+        self.assertEqual(UartFrameType.ACTIVE_REPORT, 0x06)
+        self.assertEqual(UartFrameType.STOP_FAULT_ALARM, 0x09)
+        self.assertEqual(UartFrameType.ALARM, 0x73)
+        self.assertEqual(UartFrameType.ALARM_RESPONSE, 0x74)
+
     def test_build_short_uart_command(self) -> None:
         frame = build_uart_short_command(Subcommand.QUERY_STATUS)
+        self.assertEqual(
+            frame,
+            b"\xFF\xFF\x0A\x00\x00\x00\x00\x00\x00\x01\x4D\x01\x59",
+        )
         self.assertEqual(frame[:2], b"\xFF\xFF")
-        self.assertEqual(frame[2], len(frame) - 2)
-        self.assertEqual(struct.unpack_from(">H", frame, 9)[0], Subcommand.QUERY_STATUS)
+        self.assertEqual(frame[2], len(frame) - 3)
+        self.assertEqual(
+            frame[7:9], struct.pack(">H", UartDirection.MODULE_TO_BOARD)
+        )
+        self.assertEqual(frame[9], UartFrameType.QUERY_OR_SET)
+        self.assertEqual(struct.unpack_from(">H", frame, 10)[0], Subcommand.QUERY_STATUS)
         self.assertEqual(frame[-1], sum(frame[2:-1]) & 0xFF)
+
+    def test_build_short_power_commands(self) -> None:
+        self.assertEqual(
+            build_uart_short_command(Subcommand.TURN_ON),
+            b"\xFF\xFF\x0A\x00\x00\x00\x00\x00\x00\x01\x4D\x02\x5A",
+        )
+        self.assertEqual(
+            build_uart_short_command(Subcommand.TURN_OFF),
+            b"\xFF\xFF\x0A\x00\x00\x00\x00\x00\x00\x01\x4D\x03\x5B",
+        )
 
     def test_build_set_state_and_parse_set_state_layout(self) -> None:
         frame = build_uart_set_state(
@@ -105,6 +136,11 @@ class ProtocolBuildParseTest(unittest.TestCase):
         )
 
         status = parse_uart_status(frame)
+        self.assertEqual(
+            frame[7:9], struct.pack(">H", UartDirection.MODULE_TO_BOARD)
+        )
+        self.assertEqual(frame[9], UartFrameType.QUERY_OR_SET)
+        self.assertEqual(struct.unpack_from(">H", frame, 10)[0], Subcommand.SET_STATE)
         self.assertIsNotNone(status)
         assert status is not None
         self.assertTrue(status.power_on)
@@ -175,6 +211,18 @@ class ProtocolBuildParseTest(unittest.TestCase):
 
         with self.assertRaises(InvalidPacketError):
             parse_uart_status(bytes(frame))
+
+    def test_active_report_frame_type_and_command(self) -> None:
+        frame = bytes.fromhex(
+            "ff ff 22 00 00 00 00 00 01 06 6d 01 00 1c 00 33 00 00 "
+            "00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 0a f1"
+        )
+
+        self.assertEqual(
+            frame[7:9], struct.pack(">H", UartDirection.BOARD_TO_MODULE)
+        )
+        self.assertEqual(frame[9], UartFrameType.ACTIVE_REPORT)
+        self.assertEqual(struct.unpack_from(">H", frame, 10)[0], 0x6D01)
 
 
 def _heartbeat_response(message_id: int, mac: str) -> bytes:
