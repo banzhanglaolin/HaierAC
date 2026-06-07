@@ -14,6 +14,7 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .client import HaierACClient, HaierACCommunicationError
 from .const import CONF_MAC, CONF_TIMEOUT, DEFAULT_NAME, DEFAULT_PORT, DEFAULT_TIMEOUT, DOMAIN
+from .discovery import HaierACDiscoveryError, async_discover_devices
 from .protocol import InvalidPacketError, normalize_mac
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
+        defaults: dict[str, Any] | None = None
 
         if user_input is not None:
             data, errors = _validate_user_input(user_input)
@@ -46,10 +48,12 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title=data[CONF_NAME],
                     data=data,
                 )
+        else:
+            defaults = await _discover_defaults()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_data_schema(),
+            data_schema=_data_schema(defaults),
             errors=errors,
         )
 
@@ -78,6 +82,25 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_data_schema(entry.data),
             errors=errors,
         )
+
+
+async def _discover_defaults() -> dict[str, Any]:
+    """Return config-flow defaults from UDP discovery, if a device responds."""
+    try:
+        devices = await async_discover_devices()
+    except HaierACDiscoveryError as err:
+        _LOGGER.debug("Could not run Haier AC UDP discovery: %s", err)
+        return {}
+
+    if not devices:
+        return {}
+
+    device = devices[0]
+    _LOGGER.info("Discovered Haier AC at %s with MAC %s", device.host, device.mac)
+    return {
+        CONF_HOST: device.host,
+        CONF_MAC: device.mac,
+    }
 
 
 async def _test_connection(data: dict[str, Any]) -> dict[str, str]:

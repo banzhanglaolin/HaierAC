@@ -80,6 +80,23 @@ class ConfigFlowLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("0007A8B26279", logs.output[0])
         self.assertIn("timed out", logs.output[0])
 
+    async def test_discovery_defaults_use_first_device(self) -> None:
+        devices = [types.SimpleNamespace(host="10.16.45.36", mac="0007A8B26279")]
+
+        with patch.object(config_flow, "async_discover_devices", AsyncMock(return_value=devices)):
+            defaults = await config_flow._discover_defaults()
+
+        self.assertEqual(defaults, {"host": "10.16.45.36", "mac": "0007A8B26279"})
+
+    async def test_discovery_defaults_ignore_discovery_failure(self) -> None:
+        with patch.object(
+            config_flow,
+            "async_discover_devices",
+            AsyncMock(side_effect=config_flow.HaierACDiscoveryError("no socket")),
+        ):
+            defaults = await config_flow._discover_defaults()
+
+        self.assertEqual(defaults, {})
 
 if __name__ == "__main__":
     unittest.main()

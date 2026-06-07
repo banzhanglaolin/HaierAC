@@ -9,6 +9,7 @@ This integration talks directly to the air conditioner's LAN module by IP addres
 - Climate entity for power, HVAC mode, target temperature, fan mode, and swing mode
 - Local polling over TCP
 - Config flow setup from the Home Assistant UI
+- UDP broadcast discovery to prefill the local IP address and MAC address
 - Reconfigure flow for updating IP address, port, MAC address, name, and timeout
 
 ## Installation
@@ -33,6 +34,8 @@ This integration talks directly to the air conditioner's LAN module by IP addres
 3. Go to **Settings > Devices & services > Add integration** and search for **Haier AC**.
 
 ## Configuration
+
+When the config flow opens, it first sends a UDP broadcast discovery request to `255.255.255.255:7083`. If a device responds, the IP address and MAC address fields are prefilled. You can still enter the values manually.
 
 The config flow asks for:
 
