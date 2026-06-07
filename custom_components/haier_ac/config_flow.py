@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -14,6 +15,8 @@ from homeassistant.data_entry_flow import FlowResult
 from .client import HaierACClient, HaierACCommunicationError
 from .const import CONF_MAC, CONF_TIMEOUT, DEFAULT_NAME, DEFAULT_PORT, DEFAULT_TIMEOUT, DOMAIN
 from .protocol import InvalidPacketError, normalize_mac
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -88,7 +91,14 @@ async def _test_connection(data: dict[str, Any]) -> dict[str, str]:
     )
     try:
         await client.async_test_connection()
-    except HaierACCommunicationError:
+    except HaierACCommunicationError as err:
+        _LOGGER.warning(
+            "Could not connect to Haier AC at %s:%s with MAC %s: %s",
+            data[CONF_HOST],
+            data[CONF_PORT],
+            data[CONF_MAC],
+            err,
+        )
         return {"base": "cannot_connect"}
     return {}
 
