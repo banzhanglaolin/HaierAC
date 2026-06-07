@@ -108,14 +108,42 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         reader = _Reader(response[:4], response[4:80], response[80:])
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
-            await client._consume_startup_status_reports(reader)
+            status = await client._consume_startup_status_reports(reader)
 
         output = "\n".join(logs.output)
         self.assertIn("startup status report from 192.0.2.10:56800", output)
         self.assertIn("startup status report UART from 192.0.2.10:56800", output)
         self.assertIn("DATA_RESPONSE(0x2715)", output)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.target_temperature, 26.0)
         self.assertEqual(client.status.target_temperature, 26.0)
         self.assertEqual(reader.remaining_chunks, 0)
+
+    async def test_async_query_status_uses_startup_status_without_command(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        startup_status = ACStatus(power_on=True, target_temperature=26.0)
+        writer = _Writer()
+        client._open = AsyncMock(return_value=(_Reader(), writer))
+        client._consume_startup_status_reports = AsyncMock(return_value=startup_status)
+        client._exchange_heartbeat = AsyncMock(return_value=None)
+        client._exchange_disconnect = AsyncMock()
+        client._close = AsyncMock()
+
+        status = await client.async_query_status()
+
+        self.assertEqual(status.target_temperature, 26.0)
+        self.assertTrue(status.power_on)
+        self.assertEqual(writer.data, b"")
+        client._exchange_heartbeat.assert_awaited_once()
+        client._exchange_disconnect.assert_awaited_once()
+        client._close.assert_awaited_once_with(writer)
 
     async def test_exchange_heartbeat_consumes_status_reports_until_heartbeat(self) -> None:
         client = HaierACClient(

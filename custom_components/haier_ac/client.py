@@ -78,7 +78,10 @@ class HaierACClient:
 
     async def async_query_status(self) -> ACStatus:
         """Query the current AC status."""
-        status = await self._send_uart(build_uart_short_command(Subcommand.QUERY_STATUS))
+        status = await self._send_uart(
+            build_uart_short_command(Subcommand.QUERY_STATUS),
+            use_startup_status=True,
+        )
         if status is not None:
             self.status = status
         return self.status
@@ -130,12 +133,21 @@ class HaierACClient:
         self.status = status or desired
         return self.status
 
-    async def _send_uart(self, uart_frame: bytes) -> ACStatus | None:
+    async def _send_uart(
+        self, uart_frame: bytes, *, use_startup_status: bool = False
+    ) -> ACStatus | None:
         async with self._lock:
             reader, writer = await self._open()
             try:
-                await self._consume_startup_status_reports(reader)
-                await self._exchange_heartbeat(reader, writer)
+                startup_status = await self._consume_startup_status_reports(reader)
+                heartbeat_status = await self._exchange_heartbeat(reader, writer)
+                status = heartbeat_status or startup_status
+                if use_startup_status and status is not None:
+                    self.status = status
+                    with suppress(Exception):
+                        await self._exchange_disconnect(reader, writer)
+                    return status
+
                 message_id = self._next_message_id()
                 request = build_command(message_id, self.mac, uart_frame)
                 _log_tcp_packet(
@@ -208,7 +220,7 @@ class HaierACClient:
 
     async def _exchange_heartbeat(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    ) -> ACStatus | None:
         message_id = self._next_message_id()
         request = build_heartbeat(message_id, self.mac)
         _log_tcp_packet(
@@ -224,6 +236,7 @@ class HaierACClient:
         await self._drain(writer)
 
         deadline = asyncio.get_running_loop().time() + self.timeout
+        latest_status: ACStatus | None = None
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -232,9 +245,11 @@ class HaierACClient:
                 reader, first_byte_timeout=remaining
             )
             if _data_class(response) == DataClass.DATA_RESPONSE:
-                self._handle_status_report(
+                status = self._handle_status_report(
                     response, "status report before heartbeat response"
                 )
+                if status is not None:
+                    latest_status = status
                 continue
             break
 
@@ -259,11 +274,13 @@ class HaierACClient:
                 _format_ascii(response),
             )
             raise
+        return latest_status
 
     async def _consume_startup_status_reports(
         self, reader: asyncio.StreamReader
-    ) -> None:
+    ) -> ACStatus | None:
         """Read status reports the device sends immediately after TCP connect."""
+        latest_status: ACStatus | None = None
         for index in range(_STARTUP_REPORT_LIMIT):
             timeout = (
                 min(float(self.timeout), _STARTUP_REPORT_FIRST_TIMEOUT)
@@ -275,7 +292,7 @@ class HaierACClient:
                     reader, first_byte_timeout=timeout
                 )
             except asyncio.TimeoutError:
-                return
+                return latest_status
 
             if _data_class(response) != DataClass.DATA_RESPONSE:
                 _log_tcp_packet(
@@ -287,9 +304,12 @@ class HaierACClient:
                 )
                 raise InvalidPacketError("unexpected startup packet type")
 
-            self._handle_status_report(response, "startup status report")
+            status = self._handle_status_report(response, "startup status report")
+            if status is not None:
+                latest_status = status
+        return latest_status
 
-    def _handle_status_report(self, response: bytes, label: str) -> None:
+    def _handle_status_report(self, response: bytes, label: str) -> ACStatus | None:
         report_message_id = int.from_bytes(response[72:76], "big")
         uart_len = int.from_bytes(response[76:80], "big")
         _log_tcp_packet(
@@ -324,9 +344,10 @@ class HaierACClient:
                 response.hex(" "),
                 _format_ascii(response),
             )
-            return
+            return None
         if status is not None:
             self.status = status
+        return status
 
     async def _exchange_disconnect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
