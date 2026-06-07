@@ -2,6 +2,7 @@
   "config": {
     "abort": {
       "already_configured": "This air conditioner is already configured.",
+      "invalid_discovery": "The discovered air conditioner data is not valid.",
       "reconfigure_successful": "The air conditioner configuration was updated."
     },
     "error": {
@@ -11,6 +12,10 @@
       "invalid_timeout": "Timeout must be a whole number between 1 and 30 seconds."
     },
     "step": {
+      "discovery_confirm": {
+        "description": "Set up the Haier AC at {host} with MAC {mac}.\n\nDiscovered module: {discovered_device_info}",
+        "title": "Haier AC discovered"
+      },
       "reconfigure": {
         "data": {
           "host": "IP address",

@@ -12,6 +12,10 @@
           "timeout": "Timeout"
         }
       },
+      "discovery_confirm": {
+        "title": "Haier AC discovered",
+        "description": "Set up the Haier AC at {host} with MAC {mac}.\n\nDiscovered module: {discovered_device_info}"
+      },
       "reconfigure": {
         "title": "Reconfigure Haier AC Local",
         "description": "Update the local network details for the Haier AC module.",
@@ -32,6 +36,7 @@
     },
     "abort": {
       "already_configured": "This air conditioner is already configured.",
+      "invalid_discovery": "The discovered air conditioner data is not valid.",
       "reconfigure_successful": "The air conditioner configuration was updated."
     }
   }

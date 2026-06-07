@@ -11,9 +11,17 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import config_entry_flow
 
 from .client import HaierACClient, HaierACCommunicationError
-from .const import CONF_MAC, CONF_TIMEOUT, DEFAULT_NAME, DEFAULT_PORT, DEFAULT_TIMEOUT, DOMAIN
+from .const import (
+    CONF_MAC,
+    CONF_TIMEOUT,
+    DEFAULT_NAME,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
+    DOMAIN,
+)
 from .discovery import HaierACDiscoveryError, async_discover_devices
 from .protocol import InvalidPacketError, normalize_mac
 
@@ -26,6 +34,11 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Haier AC Local."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        self._discovery_data: dict[str, Any] | None = None
+        self._discovery_placeholders: dict[str, str] | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -57,6 +70,50 @@ class HaierACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=_data_schema(defaults),
             description_placeholders=_description_placeholders(defaults),
+            errors=errors,
+        )
+
+    async def async_step_integration_discovery(
+        self, discovery_info: dict[str, Any]
+    ) -> FlowResult:
+        """Handle a Haier AC discovered by this integration."""
+        try:
+            data, placeholders = _data_from_discovery_info(discovery_info)
+        except (KeyError, ValueError):
+            return self.async_abort(reason="invalid_discovery")
+
+        await self.async_set_unique_id(data[CONF_MAC])
+        self._abort_if_unique_id_configured(
+            updates={
+                CONF_HOST: data[CONF_HOST],
+                CONF_PORT: data[CONF_PORT],
+            }
+        )
+        self._discovery_data = data
+        self._discovery_placeholders = placeholders
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_discovery_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm setup of a discovered Haier AC device."""
+        if self._discovery_data is None:
+            return self.async_abort(reason="invalid_discovery")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = await _test_connection(self._discovery_data)
+            if not errors:
+                return self.async_create_entry(
+                    title=self._discovery_data[CONF_NAME],
+                    data=self._discovery_data,
+                )
+
+        if hasattr(self, "_set_confirm_only"):
+            self._set_confirm_only()
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            description_placeholders=self._discovery_placeholders,
             errors=errors,
         )
 
@@ -119,6 +176,23 @@ async def _discover_defaults() -> dict[str, Any]:
     return defaults
 
 
+def _data_from_discovery_info(
+    discovery_info: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Return validated config data and placeholders from discovery info."""
+    user_input = {
+        CONF_NAME: discovery_info.get(CONF_NAME, DEFAULT_NAME),
+        CONF_HOST: discovery_info[CONF_HOST],
+        CONF_PORT: discovery_info.get(CONF_PORT, DEFAULT_PORT),
+        CONF_MAC: discovery_info[CONF_MAC],
+        CONF_TIMEOUT: discovery_info.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+    }
+    data, errors = _validate_user_input(user_input)
+    if errors:
+        raise ValueError(errors)
+    return data, _discovery_description_placeholders(data, discovery_info)
+
+
 def _format_discovered_device_info(device: Any) -> str | None:
     """Return read-only device information shown in the config flow."""
     firmware_version = getattr(device, "firmware_version", None)
@@ -126,6 +200,30 @@ def _format_discovered_device_info(device: Any) -> str | None:
     if firmware_version and module_type:
         return f"{firmware_version}{module_type}"
     return firmware_version or module_type
+
+
+def _discovery_description_placeholders(
+    data: dict[str, Any], discovery_info: dict[str, Any]
+) -> dict[str, str]:
+    """Return values displayed in the discovery confirmation step."""
+    return {
+        CONF_HOST: str(data[CONF_HOST]),
+        CONF_MAC: str(data[CONF_MAC]),
+        _DISCOVERED_DEVICE_INFO: str(
+            discovery_info.get(
+                _DISCOVERED_DEVICE_INFO, _DISCOVERED_DEVICE_INFO_NONE
+            )
+        ),
+    }
+
+
+async def _async_has_devices(hass: Any) -> bool:
+    """Return whether a Haier AC device can be discovered."""
+    try:
+        return bool(await async_discover_devices())
+    except HaierACDiscoveryError as err:
+        _LOGGER.debug("Could not run Haier AC UDP discovery: %s", err)
+        return False
 
 
 async def _test_connection(data: dict[str, Any]) -> dict[str, str]:
@@ -204,7 +302,9 @@ def _data_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         fields[vol.Required(CONF_MAC)] = str
 
     fields[
-        vol.Optional(CONF_TIMEOUT, default=str(defaults.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)))
+        vol.Optional(
+            CONF_TIMEOUT, default=str(defaults.get(CONF_TIMEOUT, DEFAULT_TIMEOUT))
+        )
     ] = str
 
     return vol.Schema(fields)
@@ -218,3 +318,6 @@ def _description_placeholders(defaults: dict[str, Any] | None = None) -> dict[st
             defaults.get(_DISCOVERED_DEVICE_INFO, _DISCOVERED_DEVICE_INFO_NONE)
         )
     }
+
+
+config_entry_flow.register_discovery_flow(DOMAIN, DEFAULT_NAME, _async_has_devices)
