@@ -102,6 +102,8 @@ class FanDirection(IntEnum):
 
 
 AC_STATE_ON = 0x01
+AC_AUX_HEAT_ON = 0x02
+AC_HEALTH_ON = 0x08
 
 
 @dataclass(slots=True)
@@ -115,6 +117,8 @@ class ACStatus:
     current_temperature: float | None = None
     current_humidity: float | None = None
     target_temperature: float | None = 24
+    aux_heat_on: bool = False
+    health_on: bool = False
 
 
 def normalize_mac(mac: str) -> str:
@@ -195,6 +199,8 @@ def build_uart_set_state(
     target_temperature: float | None,
     current_temperature: float | None = None,
     current_humidity: float | None = None,
+    aux_heat_on: bool = False,
+    health_on: bool = False,
 ) -> bytes:
     """Build the longer UART command that carries full AC state."""
     target_raw = _encode_target_temperature(target_temperature)
@@ -205,13 +211,12 @@ def build_uart_set_state(
     frame.extend(struct.pack(">H", UartDirection.MODULE_TO_BOARD))
     frame.append(UartFrameType.QUERY_OR_SET)
     frame.extend(struct.pack(">H", Subcommand.SET_STATE))
-    frame.extend(struct.pack(">H", int(current_temperature or 0)))
-    frame.extend(struct.pack(">H", int(current_humidity or 0)))
+    frame.extend(b"\x00" * 4)
     frame.extend(b"\x00" * 6)
-    frame.append(mode)
-    frame.append(fan_speed)
-    frame.append(fan_direction)
-    frame.append(AC_STATE_ON if power_on else 0)
+    frame.extend(struct.pack(">H", mode))
+    frame.extend(struct.pack(">H", fan_speed))
+    frame.extend(struct.pack(">H", fan_direction))
+    frame.extend(struct.pack(">H", _encode_power_options(power_on, aux_heat_on, health_on)))
     frame.extend(b"\x00" * 4)
     frame.extend(struct.pack(">H", target_raw))
     frame.append(0)
@@ -290,7 +295,11 @@ def parse_uart_status(frame: bytes) -> ACStatus | None:
     if not _valid_uart_checksum(frame):
         raise InvalidPacketError("invalid UART checksum")
 
-    if len(frame) >= 37 and _safe_int_enum(UartFrameType, frame[9]) is not None:
+    frame_type = _safe_int_enum(UartFrameType, frame[9])
+    if len(frame) >= 37 and frame_type in {
+        UartFrameType.RETURN_DATA,
+        UartFrameType.ACTIVE_REPORT,
+    }:
         return _parse_report_layout(frame)
     if len(frame) >= 32:
         return _parse_set_state_layout(frame)
@@ -298,31 +307,51 @@ def parse_uart_status(frame: bytes) -> ACStatus | None:
 
 
 def _parse_report_layout(frame: bytes) -> ACStatus:
+    power_options = _u16(frame, 28)
     return ACStatus(
-        power_on=bool(frame[25] & AC_STATE_ON),
-        mode=_safe_int_enum(Mode, frame[22], Mode.PMV),
-        fan_speed=_safe_int_enum(FanSpeed, frame[23], FanSpeed.AUTO),
-        fan_direction=_safe_int_enum(FanDirection, frame[24], FanDirection.OFF),
+        power_on=bool(power_options & AC_STATE_ON),
+        mode=_safe_int_enum(Mode, _u16(frame, 22), Mode.PMV),
+        fan_speed=_safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO),
+        fan_direction=_safe_int_enum(FanDirection, _u16(frame, 26), FanDirection.OFF),
         current_temperature=_plausible_temperature(_u16(frame, 12)),
         current_humidity=_plausible_humidity(_u16(frame, 14)),
-        target_temperature=_decode_target_temperature(frame[35]),
+        target_temperature=_decode_target_temperature(_u16(frame, 34)),
+        aux_heat_on=bool(power_options & AC_AUX_HEAT_ON),
+        health_on=bool(power_options & AC_HEALTH_ON),
     )
 
 
 def _parse_set_state_layout(frame: bytes) -> ACStatus:
+    power_options = _u16(frame, 28)
     return ACStatus(
-        power_on=bool(frame[25] & AC_STATE_ON),
-        mode=_safe_int_enum(Mode, frame[22], Mode.PMV),
-        fan_speed=_safe_int_enum(FanSpeed, frame[23], FanSpeed.AUTO),
-        fan_direction=_safe_int_enum(FanDirection, frame[24], FanDirection.OFF),
+        power_on=bool(power_options & AC_STATE_ON),
+        mode=_safe_int_enum(Mode, _u16(frame, 22), Mode.PMV),
+        fan_speed=_safe_int_enum(FanSpeed, _u16(frame, 24), FanSpeed.AUTO),
+        fan_direction=_safe_int_enum(FanDirection, _u16(frame, 26), FanDirection.OFF),
         current_temperature=_plausible_temperature(_u16(frame, 12)),
         current_humidity=_plausible_humidity(_u16(frame, 14)),
-        target_temperature=_decode_target_temperature(_u16(frame, 30)),
+        target_temperature=_decode_target_temperature(_u16(frame, 34)),
+        aux_heat_on=bool(power_options & AC_AUX_HEAT_ON),
+        health_on=bool(power_options & AC_HEALTH_ON),
     )
 
 
 def _checksum(frame: bytearray) -> int:
     return sum(frame[2:-1]) & 0xFF
+
+
+def _encode_power_options(
+    power_on: bool, aux_heat_on: bool = False, health_on: bool = False
+) -> int:
+    if not power_on:
+        return 0
+    value = 0
+    value |= AC_STATE_ON
+    if aux_heat_on:
+        value |= AC_AUX_HEAT_ON
+    if health_on:
+        value |= AC_HEALTH_ON
+    return value
 
 
 def _valid_uart_checksum(frame: bytes) -> bool:

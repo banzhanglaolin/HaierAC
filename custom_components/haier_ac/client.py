@@ -128,6 +128,8 @@ class HaierACClient:
             target_temperature=desired.target_temperature,
             current_temperature=desired.current_temperature,
             current_humidity=desired.current_humidity,
+            aux_heat_on=desired.aux_heat_on,
+            health_on=desired.health_on,
         )
         status = await self._send_uart(frame)
         self.status = status or desired
