@@ -29,6 +29,10 @@ from .protocol import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_STARTUP_REPORT_FIRST_TIMEOUT = 2.0
+_STARTUP_REPORT_IDLE_TIMEOUT = 0.25
+_STARTUP_REPORT_LIMIT = 5
+
 
 class HaierACCommunicationError(Exception):
     """Raised when communication with the air conditioner fails."""
@@ -61,6 +65,7 @@ class HaierACClient:
             try:
                 reader, writer = await self._open()
                 try:
+                    await self._consume_startup_status_reports(reader)
                     await self._exchange_heartbeat(reader, writer)
                 finally:
                     await self._close(writer)
@@ -129,6 +134,7 @@ class HaierACClient:
         async with self._lock:
             reader, writer = await self._open()
             try:
+                await self._consume_startup_status_reports(reader)
                 await self._exchange_heartbeat(reader, writer)
                 message_id = self._next_message_id()
                 request = build_command(message_id, self.mac, uart_frame)
@@ -217,20 +223,20 @@ class HaierACClient:
         writer.write(request)
         await self._drain(writer)
 
-        header = await self._read_exactly(reader, 12)
-        if int.from_bytes(header[2:4], "big") == DataClass.HEARTBEAT_RESPONSE:
-            length_bytes = await self._read_exactly(reader, 4)
-            payload_len = int.from_bytes(length_bytes, "big")
-            payload = await self._read_heartbeat_response_payload(reader, payload_len)
-            response = header + length_bytes + payload
-        else:
-            payload_len = int.from_bytes(header[8:12], "big")
-            payload = (
-                b""
-                if payload_len == 0
-                else await self._read_exactly(reader, payload_len)
+        deadline = asyncio.get_running_loop().time() + self.timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            response = await self._read_tcp_packet(
+                reader, first_byte_timeout=remaining
             )
-            response = header + payload
+            if _data_class(response) == DataClass.DATA_RESPONSE:
+                self._handle_status_report(
+                    response, "status report before heartbeat response"
+                )
+                continue
+            break
 
         _log_tcp_packet(
             self.host,
@@ -253,6 +259,74 @@ class HaierACClient:
                 _format_ascii(response),
             )
             raise
+
+    async def _consume_startup_status_reports(
+        self, reader: asyncio.StreamReader
+    ) -> None:
+        """Read status reports the device sends immediately after TCP connect."""
+        for index in range(_STARTUP_REPORT_LIMIT):
+            timeout = (
+                min(float(self.timeout), _STARTUP_REPORT_FIRST_TIMEOUT)
+                if index == 0
+                else min(float(self.timeout), _STARTUP_REPORT_IDLE_TIMEOUT)
+            )
+            try:
+                response = await self._read_tcp_packet(
+                    reader, first_byte_timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                return
+
+            if _data_class(response) != DataClass.DATA_RESPONSE:
+                _log_tcp_packet(
+                    self.host,
+                    self.port,
+                    "startup packet",
+                    "from",
+                    response,
+                )
+                raise InvalidPacketError("unexpected startup packet type")
+
+            self._handle_status_report(response, "startup status report")
+
+    def _handle_status_report(self, response: bytes, label: str) -> None:
+        report_message_id = int.from_bytes(response[72:76], "big")
+        uart_len = int.from_bytes(response[76:80], "big")
+        _log_tcp_packet(
+            self.host,
+            self.port,
+            label,
+            "from",
+            response,
+            report_message_id=report_message_id,
+            uart_length=uart_len,
+        )
+        uart_frame = response[80:]
+        if uart_frame:
+            _log_tcp_packet(
+                self.host,
+                self.port,
+                f"{label} UART",
+                "from",
+                uart_frame,
+                report_message_id=report_message_id,
+            )
+
+        try:
+            status = parse_command_response(response, report_message_id, self.mac)
+        except InvalidPacketError as err:
+            _LOGGER.warning(
+                "Invalid Haier AC %s from %s:%s: %s; hex=%s ascii=%r",
+                label,
+                self.host,
+                self.port,
+                err,
+                response.hex(" "),
+                _format_ascii(response),
+            )
+            return
+        if status is not None:
+            self.status = status
 
     async def _exchange_disconnect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -283,20 +357,53 @@ class HaierACClient:
         except InvalidPacketError:
             _LOGGER.debug("Ignoring invalid disconnect response", exc_info=True)
 
-    async def _read_exactly(
-        self, reader: asyncio.StreamReader, n: int
+    async def _read_tcp_packet(
+        self,
+        reader: asyncio.StreamReader,
+        *,
+        first_byte_timeout: float | None = None,
     ) -> bytes:
-        return await asyncio.wait_for(reader.readexactly(n), timeout=self.timeout)
+        header = await self._read_exactly(reader, 4, timeout=first_byte_timeout)
+        packet_type = _data_class(header)
+        if packet_type == DataClass.DATA_RESPONSE:
+            prefix = await self._read_exactly(reader, 76)
+            uart_len = int.from_bytes(prefix[72:76], "big")
+            uart_payload = (
+                b"" if uart_len == 0 else await self._read_exactly(reader, uart_len)
+            )
+            return header + prefix + uart_payload
+        if packet_type == DataClass.HEARTBEAT_RESPONSE:
+            prefix = await self._read_exactly(reader, 12)
+            payload_len = int.from_bytes(prefix[8:12], "big")
+            payload = await self._read_heartbeat_response_payload(
+                reader, payload_len
+            )
+            return header + prefix + payload
+        if packet_type in {
+            DataClass.DISCONNECT_RESPONSE,
+            DataClass.DISCONNECT_REQUEST,
+            DataClass.HEARTBEAT_REQUEST,
+        }:
+            return header + await self._read_exactly(reader, 12)
+        return header + await self._read_exactly(reader, 8)
+
+    async def _read_exactly(
+        self,
+        reader: asyncio.StreamReader,
+        n: int,
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
+        return await asyncio.wait_for(
+            reader.readexactly(n), timeout=self.timeout if timeout is None else timeout
+        )
 
     async def _read_heartbeat_response_payload(
         self, reader: asyncio.StreamReader, payload_len: int
     ) -> bytes:
         if payload_len == 0:
             return b""
-        payload = await self._read_exactly(reader, payload_len)
-        if payload_len == 48:
-            payload += await self._read_exactly(reader, 4)
-        return payload
+        return await self._read_exactly(reader, payload_len)
 
     async def _drain(self, writer: asyncio.StreamWriter) -> None:
         await asyncio.wait_for(writer.drain(), timeout=self.timeout)
@@ -314,6 +421,16 @@ class HaierACClient:
 
 def _format_ascii(data: bytes) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+
+
+def _data_class(data: bytes) -> DataClass | int | None:
+    if len(data) < 4:
+        return None
+    value = int.from_bytes(data[2:4], "big")
+    try:
+        return DataClass(value)
+    except ValueError:
+        return value
 
 
 def _log_tcp_packet(

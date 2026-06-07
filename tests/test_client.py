@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -34,6 +35,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         client._exchange_heartbeat = AsyncMock(
             side_effect=InvalidPacketError("bad heartbeat")
         )
+        client._consume_startup_status_reports = AsyncMock()
         client._close = AsyncMock()
 
         with self.assertRaises(HaierACCommunicationError):
@@ -50,7 +52,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             name="Haier AC",
         )
         response = _heartbeat_response(0, client.mac)
-        reader = _Reader(response[:12], response[12:16], response[16:64], response[64:])
+        reader = _Reader(response[:4], response[4:16], response[16:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
@@ -68,7 +70,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             name="Haier AC",
         )
         response = _outer_heartbeat_response(0)
-        reader = _Reader(response[:12], response[12:])
+        reader = _Reader(response[:4], response[4:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
@@ -76,7 +78,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
-    async def test_exchange_heartbeat_rejects_empty_data_response(self) -> None:
+    async def test_exchange_heartbeat_rejects_non_heartbeat_response(self) -> None:
         client = HaierACClient(
             host="192.0.2.10",
             port=56800,
@@ -84,14 +86,63 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             timeout=1,
             name="Haier AC",
         )
-        response = _empty_data_response()
-        reader = _Reader(response)
+        response = _disconnect_response(0)
+        reader = _Reader(response[:4], response[4:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
             with self.assertRaises(InvalidPacketError):
                 await client._exchange_heartbeat(reader, writer)
 
+        self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
+    async def test_consume_startup_status_reports_reads_active_reports(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=0.05,
+            name="Haier AC",
+        )
+        response = _command_response(0, client.mac, _startup_status_uart())
+        reader = _Reader(response[:4], response[4:80], response[80:])
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+            await client._consume_startup_status_reports(reader)
+
+        output = "\n".join(logs.output)
+        self.assertIn("startup status report from 192.0.2.10:56800", output)
+        self.assertIn("startup status report UART from 192.0.2.10:56800", output)
+        self.assertIn("DATA_RESPONSE(0x2715)", output)
+        self.assertEqual(client.status.target_temperature, 26.0)
+        self.assertEqual(reader.remaining_chunks, 0)
+
+    async def test_exchange_heartbeat_consumes_status_reports_until_heartbeat(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        report = _command_response(0, client.mac, _startup_status_uart())
+        heartbeat = _heartbeat_response(0, client.mac)
+        reader = _Reader(
+            report[:4],
+            report[4:80],
+            report[80:],
+            heartbeat[:4],
+            heartbeat[4:16],
+            heartbeat[16:],
+        )
+        writer = _Writer()
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
+            await client._exchange_heartbeat(reader, writer)
+
+        output = "\n".join(logs.output)
+        self.assertIn("status report before heartbeat response", output)
+        self.assertIn("heartbeat response from 192.0.2.10:56800", output)
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
 
     async def test_exchange_heartbeat_logs_request_and_response(self) -> None:
@@ -102,21 +153,20 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
             timeout=1,
             name="Haier AC",
         )
-        response = _empty_data_response()
-        reader = _Reader(response)
+        response = _heartbeat_response(0, client.mac)
+        reader = _Reader(response[:4], response[4:16], response[16:])
         writer = _Writer()
 
         with self.assertLogs("custom_components.haier_ac.client", level="WARNING") as logs:
-            with self.assertRaises(InvalidPacketError):
-                await client._exchange_heartbeat(reader, writer)
+            await client._exchange_heartbeat(reader, writer)
 
         output = "\n".join(logs.output)
         self.assertIn("heartbeat request to 192.0.2.10:56800", output)
         self.assertIn("message_id=0", output)
         self.assertIn("41 41 42 42 43 43 44 44 45 45 46 46", output)
         self.assertIn("heartbeat response from 192.0.2.10:56800", output)
-        self.assertIn("DATA_RESPONSE(0x2715)", output)
-        self.assertIn("00 00 27 15 00 00 00 00 00 00 00 00", output)
+        self.assertIn("HEARTBEAT_RESPONSE(0x5DF3)", output)
+        self.assertIn("00 00 5d f3", output)
 
     async def test_send_uart_logs_command_and_uart_packets(self) -> None:
         client = HaierACClient(
@@ -130,6 +180,7 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         reader = _Reader(response[:80], response[80:])
         writer = _Writer()
         client._open = AsyncMock(return_value=(reader, writer))
+        client._consume_startup_status_reports = AsyncMock()
         client._exchange_heartbeat = AsyncMock()
         client._exchange_disconnect = AsyncMock()
         client._close = AsyncMock()
@@ -179,6 +230,8 @@ class _Reader:
         self._chunks = list(chunks)
 
     async def readexactly(self, n: int) -> bytes:
+        if not self._chunks:
+            await asyncio.Future()
         chunk = self._chunks.pop(0)
         if len(chunk) != n:
             raise AssertionError(f"expected read size {n}, got {len(chunk)}")
@@ -207,7 +260,7 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
             b"\x00" * 4,
             struct.pack(">I", message_id),
-            struct.pack(">I", 48),
+            struct.pack(">I", 52),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
             b"\x00" * 4,
@@ -224,16 +277,6 @@ def _outer_heartbeat_response(message_id: int) -> bytes:
             b"\x00" * 4,
             struct.pack(">I", message_id),
             b"\x00" * 4,
-        )
-    )
-
-
-def _empty_data_response() -> bytes:
-    return b"".join(
-        (
-            b"\x00\x00",
-            struct.pack(">H", DataClass.DATA_RESPONSE),
-            b"\x00" * 8,
         )
     )
 
@@ -262,6 +305,13 @@ def _disconnect_response(message_id: int) -> bytes:
             struct.pack(">I", message_id),
             b"\x00" * 4,
         )
+    )
+
+
+def _startup_status_uart() -> bytes:
+    return bytes.fromhex(
+        "ff ff 22 00 00 00 00 00 01 06 6d 01 00 1b 00 33 00 00 00 "
+        "00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 0a f0"
     )
 
 

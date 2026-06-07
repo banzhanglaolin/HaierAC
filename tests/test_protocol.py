@@ -184,7 +184,7 @@ def _heartbeat_response(message_id: int, mac: str) -> bytes:
             struct.pack(">H", DataClass.HEARTBEAT_RESPONSE),
             b"\x00" * 4,
             struct.pack(">I", message_id),
-            struct.pack(">I", 48),
+            struct.pack(">I", 52),
             b"\x00" * 32,
             normalize_mac(mac).encode("ascii"),
             b"\x00" * 4,

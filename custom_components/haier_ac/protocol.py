@@ -222,8 +222,10 @@ def parse_heartbeat_response(data: bytes, message_id: int, mac: str) -> None:
         raise InvalidPacketError("heartbeat response too short")
     if _u32(data, 8) != message_id:
         raise InvalidPacketError("unexpected heartbeat message id")
-    expected_len = _u32(data, 12) + 20
-    if expected_len != len(data):
+    payload_len = _u32(data, 12)
+    if payload_len < 48:
+        raise InvalidPacketError("invalid heartbeat payload length")
+    if payload_len + 16 != len(data):
         raise InvalidPacketError("invalid heartbeat payload length")
     if data[48:60].decode("ascii", errors="ignore") != normalize_mac(mac):
         raise InvalidPacketError("unexpected heartbeat MAC address")
