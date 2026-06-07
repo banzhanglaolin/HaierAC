@@ -220,7 +220,7 @@ def build_uart_set_state(
     frame.extend(b"\x00" * 4)
     frame.extend(struct.pack(">H", target_raw))
     frame.append(0)
-    frame[2] = len(frame) - 2
+    frame[2] = len(frame) - 3
     frame[-1] = _checksum(frame)
     return bytes(frame)
 

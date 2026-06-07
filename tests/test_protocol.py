@@ -145,6 +145,7 @@ class ProtocolBuildParseTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from(">H", frame, 10)[0], Subcommand.SET_STATE)
         self.assertEqual(struct.unpack_from(">H", frame, 12)[0], 0)
         self.assertEqual(struct.unpack_from(">H", frame, 14)[0], 0)
+        self.assertEqual(struct.unpack_from(">H", frame, 16)[0], 0)
         self.assertEqual(struct.unpack_from(">H", frame, 22)[0], Mode.COOL)
         self.assertEqual(struct.unpack_from(">H", frame, 24)[0], FanSpeed.HIGH)
         self.assertEqual(struct.unpack_from(">H", frame, 26)[0], FanDirection.VERTICAL)
@@ -173,9 +174,26 @@ class ProtocolBuildParseTest(unittest.TestCase):
 
         self.assertEqual(
             frame.hex(" "),
-            "ff ff 23 00 00 00 00 00 00 01 4d 5f 00 00 00 00 "
+            "ff ff 22 00 00 00 00 00 00 01 4d 5f 00 00 00 00 "
             "00 00 00 00 00 00 00 01 00 01 00 00 00 01 00 00 "
-            "00 00 00 0a dd",
+            "00 00 00 0a dc",
+        )
+
+    def test_build_set_state_matches_known_health_command(self) -> None:
+        frame = build_uart_set_state(
+            mode=Mode.COOL,
+            fan_speed=FanSpeed.HIGH,
+            fan_direction=FanDirection.OFF,
+            power_on=True,
+            target_temperature=26,
+            health_on=True,
+        )
+
+        self.assertEqual(
+            frame.hex(" "),
+            "ff ff 22 00 00 00 00 00 00 01 4d 5f 00 00 00 00 "
+            "00 00 00 00 00 00 00 01 00 00 00 00 00 09 00 00 "
+            "00 00 00 0a e3",
         )
 
     def test_build_set_state_encodes_power_option_bits(self) -> None:
