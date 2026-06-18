@@ -366,6 +366,21 @@ class ProtocolBuildParseTest(unittest.TestCase):
         self.assertTrue(status.health_on)
         self.assertEqual(status.target_temperature, 26)
 
+    def test_parse_report_ignores_trailing_uart_delimiter(self) -> None:
+        frame = bytes.fromhex(
+            "ff ff 22 00 00 00 00 00 01 06 6d 01 00 1b 00 3d 00 04 "
+            "00 00 00 00 00 01 00 01 00 00 00 01 00 00 00 00 00 09 ff 55"
+        )
+
+        status = parse_uart_status(frame)
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertTrue(status.power_on)
+        self.assertEqual(status.mode, Mode.COOL)
+        self.assertEqual(status.fan_speed, FanSpeed.MEDIUM)
+        self.assertEqual(status.target_temperature, 25)
+
     def test_parse_report_coerces_fan_only_auto_speed_to_high(self) -> None:
         frame = bytes.fromhex(
             "ff ff 22 00 00 00 00 00 01 06 6d 01 00 1c 00 33 00 00 "

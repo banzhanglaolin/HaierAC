@@ -295,6 +295,7 @@ def parse_uart_status(frame: bytes) -> ACStatus | None:
         return None
     if frame[:2] != b"\xFF\xFF":
         raise InvalidPacketError("invalid UART header")
+    frame = _strip_trailing_uart_delimiter(frame)
     if frame[2] not in {len(frame) - 2, len(frame) - 3}:
         raise InvalidPacketError("invalid UART data length")
     if not _valid_uart_checksum(frame):
@@ -379,6 +380,20 @@ def _encode_power_options(
 def _valid_uart_checksum(frame: bytes) -> bool:
     expected = sum(frame[2:-1]) & 0xFF
     return frame[-1] == expected or frame[-1] == (sum(frame[2:]) & 0xFF) or (sum(frame[2:]) & 0xFF) == 0
+
+
+def _strip_trailing_uart_delimiter(frame: bytes) -> bytes:
+    if frame[-1] != 0x55:
+        return frame
+
+    stripped = frame[:-1]
+    if (
+        len(stripped) >= 12
+        and stripped[2] in {len(stripped) - 2, len(stripped) - 3}
+        and _valid_uart_checksum(stripped)
+    ):
+        return stripped
+    return frame
 
 
 def _encode_target_temperature(value: float | None) -> int:
