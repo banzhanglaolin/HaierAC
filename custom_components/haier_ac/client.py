@@ -32,6 +32,7 @@ _STARTUP_REPORT_FIRST_TIMEOUT = 2.0
 _STARTUP_REPORT_IDLE_TIMEOUT = 0.25
 _STARTUP_REPORT_LIMIT = 5
 _MAX_MISSED_HEARTBEATS = 3
+_TCP_CLOSE_TIMEOUT = 1.0
 StatusListener = Callable[[ACStatus], None]
 
 
@@ -123,6 +124,7 @@ class HaierACClient:
                         reader, writer
                     )
                 except _HeartbeatMissed:
+                    self._set_status(self.status)
                     return self.status
                 if heartbeat_status is not None:
                     self._set_status(heartbeat_status)
@@ -204,6 +206,7 @@ class HaierACClient:
                         reader, writer
                     )
                 except _HeartbeatMissed:
+                    self._set_status(self.status)
                     return self.status
                 pre_command_status = heartbeat_status or startup_status
                 if pre_command_status is not None:
@@ -238,6 +241,12 @@ class HaierACClient:
                         reader, writer
                     )
                 except _HeartbeatMissed:
+                    if command_status is not None:
+                        self._set_status(command_status)
+                    elif pre_command_status is not None:
+                        self._set_status(pre_command_status)
+                    else:
+                        self._set_status(self.status)
                     return command_status or pre_command_status
                 return post_heartbeat_status or command_status or pre_command_status
             except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
@@ -552,7 +561,9 @@ class HaierACClient:
     async def _close(self, writer: asyncio.StreamWriter) -> None:
         writer.close()
         with suppress(Exception):
-            await writer.wait_closed()
+            await asyncio.wait_for(
+                writer.wait_closed(), timeout=_TCP_CLOSE_TIMEOUT
+            )
 
     async def _close_connection(self) -> None:
         """Close and forget the cached TCP connection."""

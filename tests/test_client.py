@@ -7,6 +7,7 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from custom_components.haier_ac import client as client_module
 from custom_components.haier_ac.client import HaierACClient, HaierACCommunicationError
 from custom_components.haier_ac.protocol import (
     AC_AUX_HEAT_ON,
@@ -226,6 +227,29 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.status.target_temperature, 26.0)
         self.assertEqual(updates[-1].target_temperature, 26.0)
         self.assertEqual(writer.data, build_heartbeat(0, client.mac))
+
+    async def test_async_heartbeat_notifies_listener_after_single_miss(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        client.status = ACStatus(power_on=True, target_temperature=26.0)
+        updates: list[ACStatus] = []
+        client.async_add_status_listener(updates.append)
+        client._open = AsyncMock(return_value=(_Reader(), _Writer()))
+        client._consume_startup_status_reports = AsyncMock(return_value=None)
+        client._exchange_heartbeat = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        with self.assertLogs("custom_components.haier_ac.client", level="WARNING"):
+            status = await client.async_heartbeat()
+
+        self.assertTrue(status.power_on)
+        self.assertEqual(status.target_temperature, 26.0)
+        self.assertEqual(updates[-1].target_temperature, 26.0)
+        self.assertEqual(client._missed_heartbeats, 1)
 
     async def test_exchange_heartbeat_logs_request_and_response(self) -> None:
         client = HaierACClient(
@@ -450,6 +474,21 @@ class ClientConnectionTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(writer.closed)
 
+    async def test_close_does_not_block_on_stuck_wait_closed(self) -> None:
+        client = HaierACClient(
+            host="192.0.2.10",
+            port=56800,
+            mac="AABBCCDDEEFF",
+            timeout=1,
+            name="Haier AC",
+        )
+        writer = _HangingCloseWriter()
+
+        with patch.object(client_module, "_TCP_CLOSE_TIMEOUT", 0.01):
+            await client._close(writer)
+
+        self.assertTrue(writer.closed)
+
 
 class _Reader:
     def __init__(self, *chunks: bytes) -> None:
@@ -487,6 +526,11 @@ class _Writer:
 
     async def wait_closed(self) -> None:
         return None
+
+
+class _HangingCloseWriter(_Writer):
+    async def wait_closed(self) -> None:
+        await asyncio.Future()
 
 
 def _heartbeat_response(message_id: int, mac: str) -> bytes:
