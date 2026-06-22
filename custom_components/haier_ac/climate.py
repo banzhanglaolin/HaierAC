@@ -55,6 +55,7 @@ HVAC_MODE_TO_HAIER = {
 }
 HAIER_TO_HVAC_MODE = {value: key for key, value in HVAC_MODE_TO_HAIER.items()}
 _STATUS_REPORT_INTERVAL = 5
+_MAX_AVAILABILITY_FAILURES = 3
 
 
 async def async_setup_entry(
@@ -99,6 +100,7 @@ class HaierACClimate(ClimateEntity):
         self._attr_name = client.name
         self._attr_unique_id = f"{client.mac.lower()}_climate"
         self._attr_available = True
+        self._communication_failures = 0
         self._attr_device_info = {
             "identifiers": {(DOMAIN, client.mac)},
             "manufacturer": "Haier",
@@ -178,14 +180,14 @@ class HaierACClimate(ClimateEntity):
         try:
             await self._client.async_query_status()
         except HaierACCommunicationError:
-            self._attr_available = False
+            self._record_communication_failure()
         else:
-            self._attr_available = True
+            self._mark_available()
 
     @callback
     def _handle_client_status_update(self, status: ACStatus) -> None:
         """Write state immediately when the client receives a status report."""
-        self._attr_available = True
+        self._mark_available()
         self.async_write_ha_state()
 
     async def _async_status_report_loop(self) -> None:
@@ -196,11 +198,10 @@ class HaierACClimate(ClimateEntity):
             except asyncio.CancelledError:
                 raise
             except HaierACCommunicationError:
-                self._attr_available = False
-                self.async_write_ha_state()
+                if self._record_communication_failure():
+                    self.async_write_ha_state()
             else:
-                if not self._attr_available:
-                    self._attr_available = True
+                if self._mark_available():
                     self.async_write_ha_state()
 
     async def async_turn_on(self) -> None:
@@ -259,11 +260,26 @@ class HaierACClimate(ClimateEntity):
         try:
             await awaitable
         except HaierACCommunicationError:
-            self._attr_available = False
+            if self._record_communication_failure():
+                self.async_write_ha_state()
             raise
         else:
-            self._attr_available = True
+            self._mark_available()
             self.async_write_ha_state()
+
+    def _mark_available(self) -> bool:
+        was_unavailable = not self._attr_available
+        self._communication_failures = 0
+        self._attr_available = True
+        return was_unavailable
+
+    def _record_communication_failure(self) -> bool:
+        self._communication_failures += 1
+        if self._communication_failures < _MAX_AVAILABILITY_FAILURES:
+            return False
+        was_available = self._attr_available
+        self._attr_available = False
+        return was_available
 
 
 def _coerce_hvac_mode(value: object) -> HVACMode | None:

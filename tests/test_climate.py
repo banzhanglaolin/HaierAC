@@ -165,7 +165,7 @@ class ClimateFanModeTest(unittest.IsolatedAsyncioTestCase):
             power_on=True,
         )
 
-    async def test_update_marks_entity_unavailable_on_communication_error(self) -> None:
+    async def test_update_marks_entity_unavailable_after_three_errors(self) -> None:
         entity = self._entity(
             ACStatus(power_on=True, mode=Mode.COOL, fan_speed=FanSpeed.AUTO)
         )
@@ -174,18 +174,44 @@ class ClimateFanModeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await entity.async_update()
+        await entity.async_update()
+
+        self.assertTrue(entity._attr_available)
+
+        await entity.async_update()
 
         self.assertFalse(entity._attr_available)
+
+    async def test_update_success_resets_communication_failures(self) -> None:
+        entity = self._entity(
+            ACStatus(power_on=True, mode=Mode.COOL, fan_speed=FanSpeed.AUTO)
+        )
+        entity._client.async_query_status.side_effect = (
+            climate.HaierACCommunicationError("missed heartbeats")
+        )
+        await entity.async_update()
+        await entity.async_update()
+        self.assertEqual(entity._communication_failures, 2)
+
+        entity._client.async_query_status.side_effect = None
+        entity._client.async_query_status.return_value = entity._client.status
+
+        await entity.async_update()
+
+        self.assertTrue(entity._attr_available)
+        self.assertEqual(entity._communication_failures, 0)
 
     def test_status_listener_marks_entity_available_and_writes_state(self) -> None:
         entity = self._entity(
             ACStatus(power_on=True, mode=Mode.COOL, fan_speed=FanSpeed.AUTO)
         )
         entity._attr_available = False
+        entity._communication_failures = 2
 
         entity._handle_client_status_update(entity._client.status)
 
         self.assertTrue(entity._attr_available)
+        self.assertEqual(entity._communication_failures, 0)
         self.assertTrue(entity.wrote_state)
 
 
